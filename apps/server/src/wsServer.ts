@@ -1,15 +1,13 @@
 /**
  * Server - HTTP/WebSocket server service interface.
  *
- * Owns startup and shutdown lifecycle of the HTTP server, static asset serving,
- * and WebSocket request routing.
+ * Owns startup and shutdown lifecycle of the HTTP server and WebSocket request routing.
  *
  * @module Server
  */
 import http from "node:http";
 import type { Duplex } from "node:stream";
 
-import Mime from "@effect/platform-node/Mime";
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -43,12 +41,11 @@ import {
   Stream,
   Struct,
 } from "effect";
+import { clamp } from "effect/Number";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createLogger } from "./logger";
 import { GitManager } from "./git/Services/GitManager.ts";
-import { TerminalManager } from "./terminal/Services/Manager.ts";
-import { Keybindings } from "./keybindings";
 import { searchWorkspaceEntries } from "./workspaceEntries";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
@@ -56,17 +53,13 @@ import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReac
 import { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
-import { clamp } from "effect/Number";
-import { Open, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
-import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
 import {
   ATTACHMENTS_ROUTE_PREFIX,
   normalizeAttachmentRelativePath,
   resolveAttachmentRelativePath,
 } from "./attachmentPaths";
-
 import {
   createAttachmentId,
   resolveAttachmentPath,
@@ -79,28 +72,15 @@ import { makeServerPushBus } from "./wsServer/pushBus.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 
-/**
- * ServerShape - Service API for server lifecycle control.
- */
 export interface ServerShape {
-  /**
-   * Start HTTP and WebSocket listeners.
-   */
   readonly start: Effect.Effect<
     http.Server,
     ServerLifecycleError,
     Scope.Scope | ServerRuntimeServices | ServerConfig | FileSystem.FileSystem | Path.Path
   >;
-
-  /**
-   * Wait for process shutdown signals.
-   */
   readonly stopSignal: Effect.Effect<void, never>;
 }
 
-/**
- * Server - Service tag for HTTP/WebSocket lifecycle management.
- */
 export class Server extends ServiceMap.Service<Server, ServerShape>()("t3/wsServer/Server") {}
 
 const isServerNotRunningError = (error: Error): boolean => {
@@ -122,35 +102,18 @@ function rejectUpgrade(socket: Duplex, statusCode: number, message: string): voi
 }
 
 function websocketRawToString(raw: unknown): string | null {
-  if (typeof raw === "string") {
-    return raw;
+  if (typeof raw === "string") return raw;
+  if (raw instanceof Uint8Array) return Buffer.from(raw).toString("utf8");
+  if (raw instanceof ArrayBuffer) return Buffer.from(new Uint8Array(raw)).toString("utf8");
+  if (!Array.isArray(raw)) return null;
+  const chunks: string[] = [];
+  for (const chunk of raw) {
+    if (typeof chunk === "string") chunks.push(chunk);
+    else if (chunk instanceof Uint8Array) chunks.push(Buffer.from(chunk).toString("utf8"));
+    else if (chunk instanceof ArrayBuffer) chunks.push(Buffer.from(new Uint8Array(chunk)).toString("utf8"));
+    else return null;
   }
-  if (raw instanceof Uint8Array) {
-    return Buffer.from(raw).toString("utf8");
-  }
-  if (raw instanceof ArrayBuffer) {
-    return Buffer.from(new Uint8Array(raw)).toString("utf8");
-  }
-  if (Array.isArray(raw)) {
-    const chunks: string[] = [];
-    for (const chunk of raw) {
-      if (typeof chunk === "string") {
-        chunks.push(chunk);
-        continue;
-      }
-      if (chunk instanceof Uint8Array) {
-        chunks.push(Buffer.from(chunk).toString("utf8"));
-        continue;
-      }
-      if (chunk instanceof ArrayBuffer) {
-        chunks.push(Buffer.from(new Uint8Array(chunk)).toString("utf8"));
-        continue;
-      }
-      return null;
-    }
-    return chunks.join("");
-  }
-  return null;
+  return chunks.join("");
 }
 
 function toPosixRelativePath(input: string): string {
@@ -214,9 +177,6 @@ export type ServerRuntimeServices =
   | ServerCoreRuntimeServices
   | GitManager
   | GitCore
-  | TerminalManager
-  | Keybindings
-  | Open
   | AnalyticsService;
 
 export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycleError>()(
@@ -237,42 +197,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   Scope.Scope | ServerRuntimeServices | ServerConfig | FileSystem.FileSystem | Path.Path
 > {
   const serverConfig = yield* ServerConfig;
-  const {
-    port,
-    cwd,
-    keybindingsConfigPath,
-    staticDir,
-    devUrl,
-    authToken,
-    host,
-    logWebSocketEvents,
-    autoBootstrapProjectFromCwd,
-  } = serverConfig;
-  const availableEditors = resolveAvailableEditors();
+  const { port, cwd, authToken, host, logWebSocketEvents, autoBootstrapProjectFromCwd } =
+    serverConfig;
 
   const gitManager = yield* GitManager;
-  const terminalManager = yield* TerminalManager;
-  const keybindingsManager = yield* Keybindings;
   const providerHealth = yield* ProviderHealth;
   const git = yield* GitCore;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
-  yield* keybindingsManager.syncDefaultKeybindingsOnStartup.pipe(
-    Effect.catch((error) =>
-      Effect.logWarning("failed to sync keybindings defaults on startup", {
-        path: error.configPath,
-        detail: error.detail,
-        cause: error.cause,
-      }),
-    ),
-  );
-
-  const providerStatuses = yield* providerHealth.getStatuses;
-
   const clients = yield* Ref.make(new Set<WebSocket>());
   const logger = createLogger("ws");
   const readiness = yield* makeServerReadiness;
+  const providerStatuses = yield* providerHealth.getStatuses;
 
   function logOutgoingPush(push: WsPushEnvelopeBase, recipients: number) {
     if (!logWebSocketEvents) return;
@@ -284,17 +221,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     });
   }
 
-  const pushBus = yield* makeServerPushBus({
-    clients,
-    logOutgoingPush,
-  });
+  const pushBus = yield* makeServerPushBus({ clients, logOutgoingPush });
   yield* readiness.markPushBusReady;
-  yield* keybindingsManager.start.pipe(
-    Effect.mapError(
-      (cause) => new ServerLifecycleError({ operation: "keybindingsRuntimeStart", cause }),
-    ),
-  );
-  yield* readiness.markKeybindingsReady;
 
   const normalizeDispatchCommand = Effect.fnUntraced(function* (input: {
     readonly command: ClientOrchestrationCommand;
@@ -334,10 +262,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     if (input.command.type !== "thread.turn.start") {
       return input.command as OrchestrationCommand;
     }
-    const turnStartCommand = input.command;
 
     const normalizedAttachments = yield* Effect.forEach(
-      turnStartCommand.message.attachments,
+      input.command.message.attachments,
       (attachment) =>
         Effect.gen(function* () {
           const parsed = parseBase64DataUrl(attachment.dataUrl);
@@ -346,21 +273,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               message: `Invalid image attachment payload for '${attachment.name}'.`,
             });
           }
-
           const bytes = Buffer.from(parsed.base64, "base64");
           if (bytes.byteLength === 0 || bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
             return yield* new RouteRequestError({
               message: `Image attachment '${attachment.name}' is empty or too large.`,
             });
           }
-
-          const attachmentId = createAttachmentId(turnStartCommand.threadId);
+          const attachmentId = createAttachmentId(input.command.threadId);
           if (!attachmentId) {
-            return yield* new RouteRequestError({
-              message: "Failed to create a safe attachment id.",
-            });
+            return yield* new RouteRequestError({ message: "Failed to create a safe attachment id." });
           }
-
           const persistedAttachment = {
             type: "image" as const,
             id: attachmentId,
@@ -368,7 +290,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             mimeType: parsed.mimeType.toLowerCase(),
             sizeBytes: bytes.byteLength,
           };
-
           const attachmentPath = resolveAttachmentPath({
             attachmentsDir: serverConfig.attachmentsDir,
             attachment: persistedAttachment,
@@ -378,7 +299,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               message: `Failed to resolve persisted path for '${attachment.name}'.`,
             });
           }
-
           yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true }).pipe(
             Effect.mapError(
               () =>
@@ -395,28 +315,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 }),
             ),
           );
-
           return persistedAttachment;
         }),
       { concurrency: 1 },
     );
 
     return {
-      ...turnStartCommand,
+      ...input.command,
       message: {
-        ...turnStartCommand.message,
+        ...input.command.message,
         attachments: normalizedAttachments,
       },
     } satisfies OrchestrationCommand;
   });
 
-  // HTTP server — serves static files or redirects to Vite dev server
   const httpServer = http.createServer((req, res) => {
-    const respond = (
-      statusCode: number,
-      headers: Record<string, string>,
-      body?: string | Uint8Array,
-    ) => {
+    const respond = (statusCode: number, headers: Record<string, string>, body?: string | Uint8Array) => {
       res.writeHead(statusCode, headers);
       res.end(body);
     };
@@ -424,7 +338,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     void Effect.runPromise(
       Effect.gen(function* () {
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
-        if (tryHandleProjectFaviconRequest(url, res)) {
+        if (url.pathname === "/health") {
+          respond(200, { "Content-Type": "application/json" }, JSON.stringify({ ok: true }));
           return;
         }
 
@@ -435,7 +350,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             respond(400, { "Content-Type": "text/plain" }, "Invalid attachment path");
             return;
           }
-
           const isIdLookup =
             !normalizedRelativePath.includes("/") && !normalizedRelativePath.includes(".");
           const filePath = isIdLookup
@@ -448,124 +362,31 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 relativePath: normalizedRelativePath,
               });
           if (!filePath) {
-            respond(
-              isIdLookup ? 404 : 400,
-              { "Content-Type": "text/plain" },
-              isIdLookup ? "Not Found" : "Invalid attachment path",
-            );
+            respond(isIdLookup ? 404 : 400, { "Content-Type": "text/plain" }, isIdLookup ? "Not Found" : "Invalid attachment path");
             return;
           }
-
-          const fileInfo = yield* fileSystem
-            .stat(filePath)
-            .pipe(Effect.catch(() => Effect.succeed(null)));
+          const fileInfo = yield* fileSystem.stat(filePath).pipe(Effect.catch(() => Effect.succeed(null)));
           if (!fileInfo || fileInfo.type !== "File") {
             respond(404, { "Content-Type": "text/plain" }, "Not Found");
             return;
           }
-
-          const contentType = Mime.getType(filePath) ?? "application/octet-stream";
-          res.writeHead(200, {
-            "Content-Type": contentType,
-            "Cache-Control": "public, max-age=31536000, immutable",
-          });
-          const streamExit = yield* Stream.runForEach(fileSystem.stream(filePath), (chunk) =>
-            Effect.sync(() => {
-              if (!res.destroyed) {
-                res.write(chunk);
-              }
-            }),
-          ).pipe(Effect.exit);
-          if (Exit.isFailure(streamExit)) {
-            if (!res.destroyed) {
-              res.destroy();
-            }
-            return;
-          }
-          if (!res.writableEnded) {
-            res.end();
-          }
-          return;
-        }
-
-        // In dev mode, redirect to Vite dev server
-        if (devUrl) {
-          respond(302, { Location: devUrl.href });
-          return;
-        }
-
-        // Serve static files from the web app build
-        if (!staticDir) {
-          respond(
-            503,
-            { "Content-Type": "text/plain" },
-            "No static directory configured and no dev URL set.",
-          );
-          return;
-        }
-
-        const staticRoot = path.resolve(staticDir);
-        const staticRequestPath = url.pathname === "/" ? "/index.html" : url.pathname;
-        const rawStaticRelativePath = staticRequestPath.replace(/^[/\\]+/, "");
-        const hasRawLeadingParentSegment = rawStaticRelativePath.startsWith("..");
-        const staticRelativePath = path.normalize(rawStaticRelativePath).replace(/^[/\\]+/, "");
-        const hasPathTraversalSegment = staticRelativePath.startsWith("..");
-        if (
-          staticRelativePath.length === 0 ||
-          hasRawLeadingParentSegment ||
-          hasPathTraversalSegment ||
-          staticRelativePath.includes("\0")
-        ) {
-          respond(400, { "Content-Type": "text/plain" }, "Invalid static file path");
-          return;
-        }
-
-        const isWithinStaticRoot = (candidate: string) =>
-          candidate === staticRoot ||
-          candidate.startsWith(
-            staticRoot.endsWith(path.sep) ? staticRoot : `${staticRoot}${path.sep}`,
-          );
-
-        let filePath = path.resolve(staticRoot, staticRelativePath);
-        if (!isWithinStaticRoot(filePath)) {
-          respond(400, { "Content-Type": "text/plain" }, "Invalid static file path");
-          return;
-        }
-
-        const ext = path.extname(filePath);
-        if (!ext) {
-          filePath = path.resolve(filePath, "index.html");
-          if (!isWithinStaticRoot(filePath)) {
-            respond(400, { "Content-Type": "text/plain" }, "Invalid static file path");
-            return;
-          }
-        }
-
-        const fileInfo = yield* fileSystem
-          .stat(filePath)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
-        if (!fileInfo || fileInfo.type !== "File") {
-          const indexPath = path.resolve(staticRoot, "index.html");
-          const indexData = yield* fileSystem
-            .readFile(indexPath)
-            .pipe(Effect.catch(() => Effect.succeed(null)));
-          if (!indexData) {
+          const data = yield* fileSystem.readFile(filePath).pipe(Effect.catch(() => Effect.succeed(null)));
+          if (!data) {
             respond(404, { "Content-Type": "text/plain" }, "Not Found");
             return;
           }
-          respond(200, { "Content-Type": "text/html; charset=utf-8" }, indexData);
+          respond(200, { "Content-Type": "application/octet-stream" }, data);
           return;
         }
 
-        const contentType = Mime.getType(filePath) ?? "application/octet-stream";
-        const data = yield* fileSystem
-          .readFile(filePath)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
-        if (!data) {
-          respond(500, { "Content-Type": "text/plain" }, "Internal Server Error");
-          return;
-        }
-        respond(200, { "Content-Type": contentType }, data);
+        respond(
+          200,
+          { "Content-Type": "application/json" },
+          JSON.stringify({
+            name: "t3code-backend",
+            message: "Backend is running for the React Native mobile client.",
+          }),
+        );
       }),
     ).catch(() => {
       if (!res.headersSent) {
@@ -574,17 +395,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     });
   });
 
-  // WebSocket server — upgrades from the HTTP server
   const wss = new WebSocketServer({ noServer: true });
-
   const closeWebSocketServer = Effect.callback<void, ServerLifecycleError>((resume) => {
     wss.close((error) => {
       if (error && !isServerNotRunningError(error)) {
-        resume(
-          Effect.fail(
-            new ServerLifecycleError({ operation: "closeWebSocketServer", cause: error }),
-          ),
-        );
+        resume(Effect.fail(new ServerLifecycleError({ operation: "closeWebSocketServer", cause: error })));
       } else {
         resume(Effect.void);
       }
@@ -597,25 +412,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   );
 
   const listenOptions = host ? { host, port } : { port };
-
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionReadModelQuery = yield* ProjectionSnapshotQuery;
   const checkpointDiffQuery = yield* CheckpointDiffQuery;
   const orchestrationReactor = yield* OrchestrationReactor;
-  const { openInEditor } = yield* Open;
 
   const subscriptionsScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(subscriptionsScope, Exit.void));
 
   yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
     pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event),
-  ).pipe(Effect.forkIn(subscriptionsScope));
-
-  yield* Stream.runForEach(keybindingsManager.streamChanges, (event) =>
-    pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
-      issues: event.issues,
-      providers: providerStatuses,
-    }),
   ).pipe(Effect.forkIn(subscriptionsScope));
 
   yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
@@ -678,9 +484,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         welcomeBootstrapThreadId = existingThread.id;
       }
     }).pipe(
-      Effect.mapError(
-        (cause) => new ServerLifecycleError({ operation: "autoBootstrapProject", cause }),
-      ),
+      Effect.mapError((cause) => new ServerLifecycleError({ operation: "autoBootstrapProject", cause })),
     );
   }
 
@@ -688,12 +492,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     ServerRuntimeServices | ServerConfig | FileSystem.FileSystem | Path.Path
   >();
   const runPromise = Effect.runPromiseWith(runtimeServices);
-
-  const unsubscribeTerminalEvents = yield* terminalManager.subscribe(
-    (event) => void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.terminalEvent, event)),
-  );
-  yield* Effect.addFinalizer(() => Effect.sync(() => unsubscribeTerminalEvents()));
-  yield* readiness.markTerminalSubscriptionsReady;
 
   yield* NodeHttpServer.make(() => httpServer, listenOptions).pipe(
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "httpServerListen", cause })),
@@ -708,46 +506,31 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     switch (request.body._tag) {
       case ORCHESTRATION_WS_METHODS.getSnapshot:
         return yield* projectionReadModelQuery.getSnapshot();
-
       case ORCHESTRATION_WS_METHODS.dispatchCommand: {
-        const { command } = request.body;
-        const normalizedCommand = yield* normalizeDispatchCommand({ command });
+        const normalizedCommand = yield* normalizeDispatchCommand({ command: request.body.command });
         return yield* orchestrationEngine.dispatch(normalizedCommand);
       }
-
-      case ORCHESTRATION_WS_METHODS.getTurnDiff: {
-        const body = stripRequestTag(request.body);
-        return yield* checkpointDiffQuery.getTurnDiff(body);
-      }
-
-      case ORCHESTRATION_WS_METHODS.getFullThreadDiff: {
-        const body = stripRequestTag(request.body);
-        return yield* checkpointDiffQuery.getFullThreadDiff(body);
-      }
-
-      case ORCHESTRATION_WS_METHODS.replayEvents: {
-        const { fromSequenceExclusive } = request.body;
+      case ORCHESTRATION_WS_METHODS.getTurnDiff:
+        return yield* checkpointDiffQuery.getTurnDiff(stripRequestTag(request.body));
+      case ORCHESTRATION_WS_METHODS.getFullThreadDiff:
+        return yield* checkpointDiffQuery.getFullThreadDiff(stripRequestTag(request.body));
+      case ORCHESTRATION_WS_METHODS.replayEvents:
         return yield* Stream.runCollect(
           orchestrationEngine.readEvents(
-            clamp(fromSequenceExclusive, {
+            clamp(request.body.fromSequenceExclusive, {
               maximum: Number.MAX_SAFE_INTEGER,
               minimum: 0,
             }),
           ),
         ).pipe(Effect.map((events) => Array.from(events)));
-      }
-
-      case WS_METHODS.projectsSearchEntries: {
-        const body = stripRequestTag(request.body);
+      case WS_METHODS.projectsSearchEntries:
         return yield* Effect.tryPromise({
-          try: () => searchWorkspaceEntries(body),
+          try: () => searchWorkspaceEntries(stripRequestTag(request.body)),
           catch: (cause) =>
             new RouteRequestError({
               message: `Failed to search workspace entries: ${String(cause)}`,
             }),
         });
-      }
-
       case WS_METHODS.projectsWriteFile: {
         const body = stripRequestTag(request.body);
         const target = yield* resolveWorkspaceWritePath({
@@ -755,139 +538,45 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           relativePath: body.relativePath,
           path,
         });
-        yield* fileSystem
-          .makeDirectory(path.dirname(target.absolutePath), { recursive: true })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new RouteRequestError({
-                  message: `Failed to prepare workspace path: ${String(cause)}`,
-                }),
-            ),
-          );
+        yield* fileSystem.makeDirectory(path.dirname(target.absolutePath), { recursive: true }).pipe(
+          Effect.mapError(
+            (cause) => new RouteRequestError({ message: `Failed to prepare workspace path: ${String(cause)}` }),
+          ),
+        );
         yield* fileSystem.writeFileString(target.absolutePath, body.contents).pipe(
           Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to write workspace file: ${String(cause)}`,
-              }),
+            (cause) => new RouteRequestError({ message: `Failed to write workspace file: ${String(cause)}` }),
           ),
         );
         return { relativePath: target.relativePath };
       }
-
-      case WS_METHODS.shellOpenInEditor: {
-        const body = stripRequestTag(request.body);
-        return yield* openInEditor(body);
-      }
-
-      case WS_METHODS.gitStatus: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager.status(body);
-      }
-
-      case WS_METHODS.gitPull: {
-        const body = stripRequestTag(request.body);
-        return yield* git.pullCurrentBranch(body.cwd);
-      }
-
-      case WS_METHODS.gitRunStackedAction: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager.runStackedAction(body);
-      }
-
-      case WS_METHODS.gitResolvePullRequest: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager.resolvePullRequest(body);
-      }
-
-      case WS_METHODS.gitPreparePullRequestThread: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager.preparePullRequestThread(body);
-      }
-
-      case WS_METHODS.gitListBranches: {
-        const body = stripRequestTag(request.body);
-        return yield* git.listBranches(body);
-      }
-
-      case WS_METHODS.gitCreateWorktree: {
-        const body = stripRequestTag(request.body);
-        return yield* git.createWorktree(body);
-      }
-
-      case WS_METHODS.gitRemoveWorktree: {
-        const body = stripRequestTag(request.body);
-        return yield* git.removeWorktree(body);
-      }
-
-      case WS_METHODS.gitCreateBranch: {
-        const body = stripRequestTag(request.body);
-        return yield* git.createBranch(body);
-      }
-
-      case WS_METHODS.gitCheckout: {
-        const body = stripRequestTag(request.body);
-        return yield* Effect.scoped(git.checkoutBranch(body));
-      }
-
-      case WS_METHODS.gitInit: {
-        const body = stripRequestTag(request.body);
-        return yield* git.initRepo(body);
-      }
-
-      case WS_METHODS.terminalOpen: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.open(body);
-      }
-
-      case WS_METHODS.terminalWrite: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.write(body);
-      }
-
-      case WS_METHODS.terminalResize: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.resize(body);
-      }
-
-      case WS_METHODS.terminalClear: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.clear(body);
-      }
-
-      case WS_METHODS.terminalRestart: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.restart(body);
-      }
-
-      case WS_METHODS.terminalClose: {
-        const body = stripRequestTag(request.body);
-        return yield* terminalManager.close(body);
-      }
-
+      case WS_METHODS.gitStatus:
+        return yield* gitManager.status(stripRequestTag(request.body));
+      case WS_METHODS.gitPull:
+        return yield* git.pullCurrentBranch(stripRequestTag(request.body).cwd);
+      case WS_METHODS.gitRunStackedAction:
+        return yield* gitManager.runStackedAction(stripRequestTag(request.body));
+      case WS_METHODS.gitResolvePullRequest:
+        return yield* gitManager.resolvePullRequest(stripRequestTag(request.body));
+      case WS_METHODS.gitPreparePullRequestThread:
+        return yield* gitManager.preparePullRequestThread(stripRequestTag(request.body));
+      case WS_METHODS.gitListBranches:
+        return yield* git.listBranches(stripRequestTag(request.body));
+      case WS_METHODS.gitCreateWorktree:
+        return yield* git.createWorktree(stripRequestTag(request.body));
+      case WS_METHODS.gitRemoveWorktree:
+        return yield* git.removeWorktree(stripRequestTag(request.body));
+      case WS_METHODS.gitCreateBranch:
+        return yield* git.createBranch(stripRequestTag(request.body));
+      case WS_METHODS.gitCheckout:
+        return yield* Effect.scoped(git.checkoutBranch(stripRequestTag(request.body)));
+      case WS_METHODS.gitInit:
+        return yield* git.initRepo(stripRequestTag(request.body));
       case WS_METHODS.serverGetConfig:
-        const keybindingsConfig = yield* keybindingsManager.loadConfigState;
-        return {
-          cwd,
-          keybindingsConfigPath,
-          keybindings: keybindingsConfig.keybindings,
-          issues: keybindingsConfig.issues,
-          providers: providerStatuses,
-          availableEditors,
-        };
-
-      case WS_METHODS.serverUpsertKeybinding: {
-        const body = stripRequestTag(request.body);
-        const keybindingsConfig = yield* keybindingsManager.upsertKeybindingRule(body);
-        return { keybindings: keybindingsConfig, issues: [] };
-      }
-
+        return { cwd, providers: providerStatuses };
       default: {
         const _exhaustiveCheck: never = request.body;
-        return yield* new RouteRequestError({
-          message: `Unknown method: ${String(_exhaustiveCheck)}`,
-        });
+        return yield* new RouteRequestError({ message: `Unknown method: ${String(_exhaustiveCheck)}` });
       }
     }
   });
@@ -923,15 +612,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       });
     }
 
-    return yield* sendWsResponse({
-      id: request.success.id,
-      result: result.value,
-    });
+    return yield* sendWsResponse({ id: request.success.id, result: result.value });
   });
 
   httpServer.on("upgrade", (request, socket, head) => {
-    socket.on("error", () => {}); // Prevent unhandled `EPIPE`/`ECONNRESET` from crashing the process if the client disconnects mid-handshake
-
+    socket.on("error", () => {});
     if (authToken) {
       let providedToken: string | null = null;
       try {
@@ -941,13 +626,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         rejectUpgrade(socket, 400, "Invalid WebSocket URL");
         return;
       }
-
       if (providedToken !== authToken) {
         rejectUpgrade(socket, 401, "Unauthorized WebSocket connection");
         return;
       }
     }
-
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit("connection", ws, request);
     });
@@ -956,15 +639,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   wss.on("connection", (ws) => {
     const segments = cwd.split(/[/\\]/).filter(Boolean);
     const projectName = segments[segments.length - 1] ?? "project";
-
     const welcomeData = {
       cwd,
       projectName,
       ...(welcomeBootstrapProjectId ? { bootstrapProjectId: welcomeBootstrapProjectId } : {}),
       ...(welcomeBootstrapThreadId ? { bootstrapThreadId: welcomeBootstrapThreadId } : {}),
     };
-    // Send welcome before adding to broadcast set so publishAll calls
-    // cannot reach this client before the welcome arrives.
+
     void runPromise(
       readiness.awaitServerReady.pipe(
         Effect.flatMap(() => pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, welcomeData)),
@@ -977,23 +658,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     ws.on("message", (raw) => {
       void runPromise(handleMessage(ws, raw).pipe(Effect.ignoreCause({ log: true })));
     });
-
     ws.on("close", () => {
-      void runPromise(
-        Ref.update(clients, (clients) => {
-          clients.delete(ws);
-          return clients;
-        }),
-      );
+      void runPromise(Ref.update(clients, (clients) => {
+        clients.delete(ws);
+        return clients;
+      }));
     });
-
     ws.on("error", () => {
-      void runPromise(
-        Ref.update(clients, (clients) => {
-          clients.delete(ws);
-          return clients;
-        }),
-      );
+      void runPromise(Ref.update(clients, (clients) => {
+        clients.delete(ws);
+        return clients;
+      }));
     });
   });
 
