@@ -52,7 +52,6 @@ describe("makeServerPushBus", () => {
         });
 
         yield* pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
-          issues: [{ kind: "keybindings.malformed-config", message: "queued-before-connect" }],
           providers: [],
         });
 
@@ -69,7 +68,6 @@ describe("makeServerPushBus", () => {
         yield* Ref.update(clients, (current) => current.add(client as unknown as WebSocket));
 
         yield* pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
-          issues: [],
           providers: [],
         });
 
@@ -94,7 +92,6 @@ describe("makeServerPushBus", () => {
           sequence: 3,
           channel: WS_CHANNELS.serverConfigUpdated,
           data: {
-            issues: [],
             providers: [],
           },
         });

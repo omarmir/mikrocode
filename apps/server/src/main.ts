@@ -6,19 +6,11 @@
  *
  * @module CliConfig
  */
-import { Config, Data, Effect, FileSystem, Layer, Option, Path, Schema, ServiceMap } from "effect";
+import { Config, Data, Effect, Layer, Option, Schema, ServiceMap } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
 import { NetService } from "@t3tools/shared/Net";
-import {
-  DEFAULT_PORT,
-  deriveServerPaths,
-  resolveStaticDir,
-  ServerConfig,
-  type RuntimeMode,
-  type ServerConfigShape,
-} from "./config";
+import { DEFAULT_PORT, deriveServerPaths, ServerConfig, type ServerConfigShape } from "./config";
 import { fixPath, resolveBaseDir } from "./os-jank";
-import { Open } from "./open";
 import * as SqlitePersistence from "./persistence/Layers/Sqlite";
 import { makeServerProviderLayer, makeServerRuntimeServicesLayer } from "./serverLayers";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
@@ -34,78 +26,32 @@ export class StartupError extends Data.TaggedError("StartupError")<{
 }> {}
 
 interface CliInput {
-  readonly mode: Option.Option<RuntimeMode>;
   readonly port: Option.Option<number>;
   readonly host: Option.Option<string>;
   readonly t3Home: Option.Option<string>;
-  readonly devUrl: Option.Option<URL>;
-  readonly noBrowser: Option.Option<boolean>;
   readonly authToken: Option.Option<string>;
   readonly autoBootstrapProjectFromCwd: Option.Option<boolean>;
   readonly logWebSocketEvents: Option.Option<boolean>;
 }
 
-/**
- * CliConfigShape - Startup helpers required while building server layers.
- */
 export interface CliConfigShape {
-  /**
-   * Current process working directory.
-   */
   readonly cwd: string;
-
-  /**
-   * Apply OS-specific PATH normalization.
-   */
   readonly fixPath: Effect.Effect<void>;
-
-  /**
-   * Resolve static web asset directory for server mode.
-   */
-  readonly resolveStaticDir: Effect.Effect<string | undefined>;
 }
 
-/**
- * CliConfig - Service tag for startup CLI/runtime helpers.
- */
 export class CliConfig extends ServiceMap.Service<CliConfig, CliConfigShape>()(
   "t3/main/CliConfig",
 ) {
-  static readonly layer = Layer.effect(
-    CliConfig,
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      return {
-        cwd: process.cwd(),
-        fixPath: Effect.sync(fixPath),
-        resolveStaticDir: resolveStaticDir().pipe(
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-        ),
-      } satisfies CliConfigShape;
-    }),
-  );
+  static readonly layer = Layer.succeed(CliConfig, {
+    cwd: process.cwd(),
+    fixPath: Effect.sync(fixPath),
+  } satisfies CliConfigShape);
 }
 
 const CliEnvConfig = Config.all({
-  mode: Config.string("T3CODE_MODE").pipe(
-    Config.option,
-    Config.map(
-      Option.match<RuntimeMode, string>({
-        onNone: () => "web",
-        onSome: (value) => (value === "desktop" ? "desktop" : "web"),
-      }),
-    ),
-  ),
   port: Config.port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
   host: Config.string("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
   t3Home: Config.string("T3CODE_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  devUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  noBrowser: Config.boolean("T3CODE_NO_BROWSER").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
-  ),
   authToken: Config.string("T3CODE_AUTH_TOKEN").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -136,53 +82,29 @@ const ServerConfigLive = (input: CliInput) =>
         ),
       );
 
-      const mode = Option.getOrElse(input.mode, () => env.mode);
-
       const port = yield* Option.match(input.port, {
-        onSome: (value) => Effect.succeed(value),
-        onNone: () => {
-          if (env.port) {
-            return Effect.succeed(env.port);
-          }
-          if (mode === "desktop") {
-            return Effect.succeed(DEFAULT_PORT);
-          }
-          return findAvailablePort(DEFAULT_PORT);
-        },
+        onSome: Effect.succeed,
+        onNone: () => (env.port ? Effect.succeed(env.port) : findAvailablePort(DEFAULT_PORT)),
       });
 
-      const devUrl = Option.getOrElse(input.devUrl, () => env.devUrl);
       const baseDir = yield* resolveBaseDir(Option.getOrUndefined(input.t3Home) ?? env.t3Home);
-      const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
-      const noBrowser = resolveBooleanFlag(input.noBrowser, env.noBrowser ?? mode === "desktop");
-      const authToken = Option.getOrUndefined(input.authToken) ?? env.authToken;
-      const autoBootstrapProjectFromCwd = resolveBooleanFlag(
-        input.autoBootstrapProjectFromCwd,
-        env.autoBootstrapProjectFromCwd ?? mode === "web",
-      );
-      const logWebSocketEvents = resolveBooleanFlag(
-        input.logWebSocketEvents,
-        env.logWebSocketEvents ?? Boolean(devUrl),
-      );
-      const staticDir = devUrl ? undefined : yield* cliConfig.resolveStaticDir;
-      const host =
-        Option.getOrUndefined(input.host) ??
-        env.host ??
-        (mode === "desktop" ? "127.0.0.1" : undefined);
-
+      const derivedPaths = yield* deriveServerPaths(baseDir);
       const config: ServerConfigShape = {
-        mode,
+        mode: "server",
         port,
         cwd: cliConfig.cwd,
-        host,
+        host: Option.getOrUndefined(input.host) ?? env.host,
         baseDir,
         ...derivedPaths,
-        staticDir,
-        devUrl,
-        noBrowser,
-        authToken,
-        autoBootstrapProjectFromCwd,
-        logWebSocketEvents,
+        authToken: Option.getOrUndefined(input.authToken) ?? env.authToken,
+        autoBootstrapProjectFromCwd: resolveBooleanFlag(
+          input.autoBootstrapProjectFromCwd,
+          env.autoBootstrapProjectFromCwd ?? true,
+        ),
+        logWebSocketEvents: resolveBooleanFlag(
+          input.logWebSocketEvents,
+          env.logWebSocketEvents ?? false,
+        ),
       } satisfies ServerConfigShape;
 
       return config;
@@ -199,12 +121,6 @@ const LayerLive = (input: CliInput) =>
     Layer.provideMerge(AnalyticsServiceLayerLive),
     Layer.provideMerge(ServerConfigLive(input)),
   );
-
-const isWildcardHost = (host: string | undefined): boolean =>
-  host === "0.0.0.0" || host === "::" || host === "[::]";
-
-const formatHostForUrl = (host: string): string =>
-  host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 
 export const recordStartupHeartbeat = Effect.gen(function* () {
   const analytics = yield* AnalyticsService;
@@ -235,77 +151,35 @@ const makeServerProgram = (input: CliInput) =>
   Effect.gen(function* () {
     const cliConfig = yield* CliConfig;
     const { start, stopSignal } = yield* Server;
-    const openDeps = yield* Open;
     yield* cliConfig.fixPath;
 
     const config = yield* ServerConfig;
-
-    if (!config.devUrl && !config.staticDir) {
-      yield* Effect.logWarning(
-        "web bundle missing and no VITE_DEV_SERVER_URL; web UI unavailable",
-        {
-          hint: "Run `bun run --cwd apps/web build` or set VITE_DEV_SERVER_URL for dev mode.",
-        },
-      );
-    }
-
     yield* start;
     yield* Effect.forkChild(recordStartupHeartbeat);
 
-    const localUrl = `http://localhost:${config.port}`;
-    const bindUrl =
-      config.host && !isWildcardHost(config.host)
-        ? `http://${formatHostForUrl(config.host)}:${config.port}`
-        : localUrl;
-    const { authToken, devUrl, ...safeConfig } = config;
-    yield* Effect.logInfo("T3 Code running", {
+    const bindHost = config.host ?? "localhost";
+    const bindUrl = `http://${bindHost.includes(":") ? `[${bindHost}]` : bindHost}:${config.port}`;
+    const { authToken, ...safeConfig } = config;
+    yield* Effect.logInfo("T3 Code backend running", {
       ...safeConfig,
-      devUrl: devUrl?.toString(),
+      bindUrl,
       authEnabled: Boolean(authToken),
     });
-
-    if (!config.noBrowser) {
-      const target = config.devUrl?.toString() ?? bindUrl;
-      yield* openDeps.openBrowser(target).pipe(
-        Effect.catch(() =>
-          Effect.logInfo("browser auto-open unavailable", {
-            hint: `Open ${target} in your browser.`,
-          }),
-        ),
-      );
-    }
 
     return yield* stopSignal;
   }).pipe(Effect.provide(LayerLive(input)));
 
-/**
- * These flags mirrors the environment variables and the config shape.
- */
-
-const modeFlag = Flag.choice("mode", ["web", "desktop"]).pipe(
-  Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
-  Flag.optional,
-);
 const portFlag = Flag.integer("port").pipe(
   Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
   Flag.withDescription("Port for the HTTP/WebSocket server."),
   Flag.optional,
 );
 const hostFlag = Flag.string("host").pipe(
-  Flag.withDescription("Host/interface to bind (for example 127.0.0.1, 0.0.0.0, or a Tailnet IP)."),
+  Flag.withDescription("Host/interface to bind (for example 127.0.0.1 or 0.0.0.0)."),
   Flag.optional,
 );
 const t3HomeFlag = Flag.string("home-dir").pipe(
   Flag.withDescription("Base directory for all T3 Code data (equivalent to T3CODE_HOME)."),
-  Flag.optional,
-);
-const devUrlFlag = Flag.string("dev-url").pipe(
-  Flag.withSchema(Schema.URLFromString),
-  Flag.withDescription("Dev web URL to proxy/redirect to (equivalent to VITE_DEV_SERVER_URL)."),
-  Flag.optional,
-);
-const noBrowserFlag = Flag.boolean("no-browser").pipe(
-  Flag.withDescription("Disable automatic browser opening."),
   Flag.optional,
 );
 const authTokenFlag = Flag.string("auth-token").pipe(
@@ -328,16 +202,13 @@ const logWebSocketEventsFlag = Flag.boolean("log-websocket-events").pipe(
 );
 
 export const t3Cli = Command.make("t3", {
-  mode: modeFlag,
   port: portFlag,
   host: hostFlag,
   t3Home: t3HomeFlag,
-  devUrl: devUrlFlag,
-  noBrowser: noBrowserFlag,
   authToken: authTokenFlag,
   autoBootstrapProjectFromCwd: autoBootstrapProjectFromCwdFlag,
   logWebSocketEvents: logWebSocketEventsFlag,
 }).pipe(
-  Command.withDescription("Run the T3 Code server."),
-  Command.withHandler((input) => Effect.scoped(makeServerProgram(input))),
+  Command.withDescription("Run the T3 Code backend for the mobile client."),
+  Command.withHandler(makeServerProgram),
 );

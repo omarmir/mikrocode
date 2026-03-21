@@ -1,0 +1,9 @@
+{
+  "expo": {
+    "name": "T3 Code Mobile",
+    "slug": "t3code-mobile",
+    "scheme": "t3code-mobile",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic"
+  }
+}
