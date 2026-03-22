@@ -1,22 +1,27 @@
 {
   "expo": {
-    "name": "T3 Code Mobile",
-    "slug": "t3code-mobile",
-    "scheme": "t3code-mobile",
+    "name": "mikrocode",
+    "slug": "mikrocode",
+    "scheme": "mikrocode",
+    "icon": "../../assets/prod/mikrocode-icon-1024.png",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "plugins": [
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow T3 Code Mobile to access your photos so you can send images to the model.",
+          "photosPermission": "Allow mikrocode to access your photos so you can send images to the model.",
           "cameraPermission": false,
           "microphonePermission": false
         }
       ]
     ],
     "android": {
-      "package": "com.anonymous.t3codemobile"
+      "package": "com.mikrocode",
+      "adaptiveIcon": {
+        "foregroundImage": "../../assets/prod/mikrocode-adaptive-foreground.png",
+        "backgroundColor": "#100F0F"
+      }
     }
   }
 }

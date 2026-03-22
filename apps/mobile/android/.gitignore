@@ -1,0 +1,26 @@
+# OSX
+#
+.DS_Store
+
+# Android/IntelliJ
+#
+build/
+!app/build/
+app/build/*
+!app/build/outputs/
+app/build/outputs/*
+!app/build/outputs/apk/
+app/build/outputs/apk/*
+!app/build/outputs/apk/release/
+app/build/outputs/apk/release/*
+!app/build/outputs/apk/release/app-release.apk
+.idea
+.gradle
+local.properties
+app/debug.keystore
+*.iml
+*.hprof
+.cxx/
+
+# Bundle artifacts
+*.jsbundle

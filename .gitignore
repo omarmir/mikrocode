@@ -6,11 +6,11 @@ node_modules
 *.tsbuildinfo
 apps/*/dist
 apps/mobile/.expo
-apps/mobile/android/*
-!apps/mobile/android/app/
-apps/mobile/android/app/*
-!apps/mobile/android/app/build/
-apps/mobile/android/app/build/*
+!apps/mobile/android/
+apps/mobile/android/.gradle/
+apps/mobile/android/.kotlin/
+apps/mobile/android/build/
+apps/mobile/android/app/build/
 !apps/mobile/android/app/build/outputs/
 apps/mobile/android/app/build/outputs/*
 !apps/mobile/android/app/build/outputs/apk/
