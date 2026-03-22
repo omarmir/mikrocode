@@ -58,7 +58,12 @@ import type {
 
 import { MOBILE_DEFAULT_MODEL } from "./defaults";
 import { buildAttachmentUrl, createClientId } from "./protocol";
-import { type ConnectionSettings } from "./storage";
+import {
+  loadThreadTurnPreferences,
+  saveThreadTurnPreferences,
+  type ConnectionSettings,
+  type StoredThreadTurnPreference,
+} from "./storage";
 import {
   FLEXOKI_DARK_ACCENT_OPTIONS,
   FLEXOKI_DARK_NEUTRAL_OPTIONS,
@@ -79,10 +84,7 @@ const TERMINAL_FONT_FAMILY = Platform.select({
   default: "monospace",
 });
 type ComposerPanelMode = "model" | "reasoning" | "git";
-type ThreadTurnPreference = {
-  readonly reasoningEffort: ProviderReasoningEffort | null;
-  readonly assistantDeliveryMode: AssistantDeliveryMode;
-};
+type ThreadTurnPreference = StoredThreadTurnPreference;
 type DraftImageAttachment = UploadChatAttachment & {
   readonly id: string;
   readonly previewUri: string;
@@ -671,6 +673,7 @@ function AppShellContent() {
   const [threadTurnPreferences, setThreadTurnPreferences] = useState<
     Record<string, ThreadTurnPreference>
   >({});
+  const [threadTurnPreferencesReady, setThreadTurnPreferencesReady] = useState(false);
   const [revealedMessageId, setRevealedMessageId] = useState<string | null>(null);
   const [projectBuilderOpen, setProjectBuilderOpen] = useState(false);
   const [projectBuilderRoot, setProjectBuilderRoot] = useState<string | null>(null);
@@ -753,10 +756,15 @@ function AppShellContent() {
             : defaultReasoning;
         return {
           reasoningEffort: resolvedReasoning,
-          assistantDeliveryMode: stored?.assistantDeliveryMode ?? "buffered",
+          assistantDeliveryMode: stored?.assistantDeliveryMode ?? "streaming",
+          runtimeMode: stored?.runtimeMode ?? selectedThread.runtimeMode ?? "full-access",
         } satisfies ThreadTurnPreference;
       })()
     : null;
+  const selectedRuntimeMode =
+    selectedThreadTurnPreference?.runtimeMode ?? selectedThread?.runtimeMode ?? "full-access";
+  const selectedAssistantDeliveryMode =
+    selectedThreadTurnPreference?.assistantDeliveryMode ?? "streaming";
 
   const snapshotSequenceLabel = lastPushSequence === null ? "--" : `${lastPushSequence}`;
   const homeSubtitle = selectedProject
@@ -1153,7 +1161,12 @@ function AppShellContent() {
         assistantDeliveryMode:
           patch.assistantDeliveryMode ??
           current[selectedThread.id]?.assistantDeliveryMode ??
-          "buffered",
+          "streaming",
+        runtimeMode:
+          patch.runtimeMode ??
+          current[selectedThread.id]?.runtimeMode ??
+          selectedThread.runtimeMode ??
+          "full-access",
       },
     }));
   };
@@ -1179,6 +1192,34 @@ function AppShellContent() {
     setDirectoryTruncated(listing.truncated);
     setProjectTitleDraft(basenameOf(listing.cwd));
   };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void loadThreadTurnPreferences().then((loaded) => {
+      if (cancelled) {
+        return;
+      }
+
+      setThreadTurnPreferences((current) => ({
+        ...loaded,
+        ...current,
+      }));
+      setThreadTurnPreferencesReady(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!threadTurnPreferencesReady) {
+      return;
+    }
+
+    void saveThreadTurnPreferences(threadTurnPreferences);
+  }, [threadTurnPreferences, threadTurnPreferencesReady]);
 
   useEffect(() => {
     if (!projectBuilderOpen || directoryCwd !== null) {
@@ -1421,9 +1462,7 @@ function AppShellContent() {
 
   const handleToggleAssistantDeliveryMode = () => {
     handleSelectAssistantDeliveryMode(
-      (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") === "streaming"
-        ? "buffered"
-        : "streaming",
+      selectedAssistantDeliveryMode === "streaming" ? "buffered" : "streaming",
     );
   };
 
@@ -1449,7 +1488,7 @@ function AppShellContent() {
     if (!selectedThread) {
       return;
     }
-    if (selectedThread.runtimeMode === runtimeMode) {
+    if (selectedRuntimeMode === runtimeMode) {
       closeConversationPicker();
       return;
     }
@@ -1458,6 +1497,7 @@ function AppShellContent() {
       threadId: selectedThread.id,
       runtimeMode,
     });
+    updateThreadTurnPreference({ runtimeMode });
     setConversationCapabilities(null);
     showToast(
       runtimeMode === "approval-required" ? "Permissions: Ask first" : "Permissions: Full access",
@@ -1470,7 +1510,7 @@ function AppShellContent() {
       return;
     }
     await handleSelectConversationRuntimeMode(
-      selectedThread.runtimeMode === "approval-required" ? "full-access" : "approval-required",
+      selectedRuntimeMode === "approval-required" ? "full-access" : "approval-required",
     );
   };
 
@@ -1597,10 +1637,10 @@ function AppShellContent() {
         sizeBytes: attachment.sizeBytes,
         dataUrl: attachment.dataUrl,
       })),
-      runtimeMode: selectedThread.runtimeMode,
+      runtimeMode: selectedRuntimeMode,
       interactionMode: selectedThread.interactionMode,
       model: selectedThread.model,
-      assistantDeliveryMode: selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered",
+      assistantDeliveryMode: selectedAssistantDeliveryMode,
       modelOptions:
         selectedConversationProvider === "codex" && selectedThreadTurnPreference?.reasoningEffort
           ? {
@@ -1995,7 +2035,7 @@ function AppShellContent() {
           </Pressable>
           <Pressable
             accessibilityLabel={
-              selectedThread?.runtimeMode === "approval-required"
+              selectedRuntimeMode === "approval-required"
                 ? "Enable full access permissions"
                 : "Require approval for permissions"
             }
@@ -2006,15 +2046,15 @@ function AppShellContent() {
             style={[
               styles.composerControlButton,
               styles.composerControlButtonIcon,
-              selectedThread?.runtimeMode === "full-access" && styles.composerControlButtonSelected,
+              selectedRuntimeMode === "full-access" && styles.composerControlButtonSelected,
               (!selectedThread || !isConnected || busyAction !== null) && styles.buttonDisabled,
             ]}
           >
             <Feather
               accessibilityElementsHidden
-              color={selectedThread?.runtimeMode === "full-access" ? theme.accent : theme.text}
+              color={selectedRuntimeMode === "full-access" ? theme.accent : theme.text}
               importantForAccessibility="no-hide-descendants"
-              name={formatRuntimeModeIcon(selectedThread?.runtimeMode ?? "approval-required")}
+              name={formatRuntimeModeIcon(selectedRuntimeMode)}
               size={14}
             />
           </Pressable>
@@ -2038,7 +2078,7 @@ function AppShellContent() {
           </Pressable>
           <Pressable
             accessibilityLabel={
-              (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") === "streaming"
+              selectedAssistantDeliveryMode === "streaming"
                 ? "Switch reply delivery to queue"
                 : "Switch reply delivery to live"
             }
@@ -2049,22 +2089,15 @@ function AppShellContent() {
             style={[
               styles.composerControlButton,
               styles.composerControlButtonIcon,
-              (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") === "streaming" &&
-                styles.composerControlButtonSelected,
+              selectedAssistantDeliveryMode === "streaming" && styles.composerControlButtonSelected,
               (!selectedThread || busyAction !== null) && styles.buttonDisabled,
             ]}
           >
             <Feather
               accessibilityElementsHidden
-              color={
-                (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") === "streaming"
-                  ? theme.accent
-                  : theme.text
-              }
+              color={selectedAssistantDeliveryMode === "streaming" ? theme.accent : theme.text}
               importantForAccessibility="no-hide-descendants"
-              name={formatAssistantDeliveryModeIcon(
-                selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered",
-              )}
+              name={formatAssistantDeliveryModeIcon(selectedAssistantDeliveryMode)}
               size={14}
             />
           </Pressable>
@@ -2396,11 +2429,7 @@ function AppShellContent() {
           <View style={styles.composerRunAction}>
             <ActionButton
               disabled={!canSend}
-              label={
-                (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") === "streaming"
-                  ? "Send"
-                  : "Queue"
-              }
+              label={selectedAssistantDeliveryMode === "streaming" ? "Send" : "Queue"}
               onPress={() => {
                 void handleSend();
               }}
@@ -4264,7 +4293,8 @@ function createStyles(theme: AppTheme) {
       fontSize: 12,
       minHeight: 48,
       paddingHorizontal: 2,
-      paddingVertical: 4,
+      paddingTop: 4,
+      paddingBottom: 6,
     },
     composerFooter: {
       alignItems: "center",
