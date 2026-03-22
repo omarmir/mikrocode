@@ -23,7 +23,7 @@ import {
   type StopSessionInput,
 } from "./protocol";
 import {
-  DEFAULT_CONNECTION_SETTINGS,
+  getDefaultConnectionSettings,
   loadConnectionSettings,
   saveConnectionSettings,
   type ConnectionSettings,
@@ -63,7 +63,7 @@ function withCommandMeta<TCommand extends Record<string, unknown>>(command: TCom
 
 export function useBackendConnection() {
   const [connectionSettings, setConnectionSettings] = useState<ConnectionSettings>(
-    DEFAULT_CONNECTION_SETTINGS,
+    getDefaultConnectionSettings(),
   );
   const [settingsReady, setSettingsReady] = useState(false);
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");

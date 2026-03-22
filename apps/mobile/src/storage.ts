@@ -1,3 +1,4 @@
+import Constants from "expo-constants";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export interface ConnectionSettings {
@@ -14,30 +15,67 @@ export const DEFAULT_CONNECTION_SETTINGS: ConnectionSettings = {
   autoConnect: true,
 };
 
-export async function loadConnectionSettings(): Promise<ConnectionSettings> {
+function isLoopbackServerUrl(value: string) {
+  return /^(ws|http)s?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(value.trim());
+}
+
+function getExpoHostUri() {
+  return (
+    Constants.expoConfig?.hostUri ??
+    Constants.platform?.hostUri ??
+    Constants.manifest2?.extra?.expoClient?.hostUri ??
+    null
+  );
+}
+
+function deriveServerUrl() {
+  const hostUri = getExpoHostUri();
+  if (!hostUri) {
+    return DEFAULT_CONNECTION_SETTINGS.serverUrl;
+  }
+
+  const host = hostUri.split(":")[0]?.trim();
+  if (!host) {
+    return DEFAULT_CONNECTION_SETTINGS.serverUrl;
+  }
+
+  return `ws://${host}:3773`;
+}
+
+export function getDefaultConnectionSettings(): ConnectionSettings {
+  return {
+    ...DEFAULT_CONNECTION_SETTINGS,
+    serverUrl: deriveServerUrl(),
+  };
+}
+
+export async function loadConnectionSettings(
+  defaults: ConnectionSettings = getDefaultConnectionSettings(),
+): Promise<ConnectionSettings> {
   const stored = await AsyncStorage.getItem(STORAGE_KEY);
   if (!stored) {
-    return DEFAULT_CONNECTION_SETTINGS;
+    return defaults;
   }
 
   try {
     const parsed = JSON.parse(stored) as Partial<ConnectionSettings>;
+    const parsedServerUrl =
+      typeof parsed.serverUrl === "string" && parsed.serverUrl.trim().length > 0
+        ? parsed.serverUrl
+        : defaults.serverUrl;
+
     return {
       serverUrl:
-        typeof parsed.serverUrl === "string"
-          ? parsed.serverUrl
-          : DEFAULT_CONNECTION_SETTINGS.serverUrl,
-      authToken:
-        typeof parsed.authToken === "string"
-          ? parsed.authToken
-          : DEFAULT_CONNECTION_SETTINGS.authToken,
+        isLoopbackServerUrl(parsedServerUrl) &&
+        defaults.serverUrl !== DEFAULT_CONNECTION_SETTINGS.serverUrl
+          ? defaults.serverUrl
+          : parsedServerUrl,
+      authToken: typeof parsed.authToken === "string" ? parsed.authToken : defaults.authToken,
       autoConnect:
-        typeof parsed.autoConnect === "boolean"
-          ? parsed.autoConnect
-          : DEFAULT_CONNECTION_SETTINGS.autoConnect,
+        typeof parsed.autoConnect === "boolean" ? parsed.autoConnect : defaults.autoConnect,
     };
   } catch {
-    return DEFAULT_CONNECTION_SETTINGS;
+    return defaults;
   }
 }
 
