@@ -589,6 +589,23 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
         return { relativePath: target.relativePath };
       }
+      case WS_METHODS.projectsCreateDirectory: {
+        const body = stripRequestTag(request.body);
+        const target = yield* resolveWorkspaceWritePath({
+          workspaceRoot: body.cwd,
+          relativePath: body.relativePath,
+          path,
+        });
+        yield* fileSystem.makeDirectory(target.absolutePath, { recursive: true }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RouteRequestError({
+                message: `Failed to create directory: ${String(cause)}`,
+              }),
+          ),
+        );
+        return { relativePath: target.relativePath };
+      }
       case WS_METHODS.gitStatus:
         return yield* gitManager.status(stripRequestTag(request.body));
       case WS_METHODS.gitPull:

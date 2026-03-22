@@ -2,6 +2,7 @@ import { startTransition, useCallback, useEffect, useRef, useState } from "react
 
 import type {
   OrchestrationReadModel,
+  ProjectEntry,
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig,
@@ -15,10 +16,14 @@ import {
   MOBILE_WS_CHANNELS,
   MOBILE_WS_METHODS,
   type ConnectionStatus,
+  type CreateDirectoryInput,
+  type CreateProjectInput,
   type CreateThreadInput,
+  type DirectoryListing,
   type InterruptTurnInput,
   type PushMessage,
   type RpcResponse,
+  type SearchDirectoryInput,
   type SendTurnInput,
   type StopSessionInput,
 } from "./protocol";
@@ -453,6 +458,24 @@ export function useBackendConnection() {
     );
   });
 
+  const createProject = useStableEvent(async (input: CreateProjectInput) => {
+    const projectId = createClientId("project");
+
+    await runBusyCommand("Creating project", () =>
+      dispatchCommand(
+        withCommandMeta({
+          type: "project.create",
+          projectId,
+          title: input.title.trim() || input.workspaceRoot.trim(),
+          workspaceRoot: input.workspaceRoot.trim(),
+          ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
+        }),
+      ),
+    );
+
+    return projectId;
+  });
+
   const createThread = useStableEvent(async (input: CreateThreadInput) => {
     const threadId = createClientId("thread");
 
@@ -518,6 +541,36 @@ export function useBackendConnection() {
     );
   });
 
+  const searchDirectory = useStableEvent(
+    async (input: SearchDirectoryInput): Promise<DirectoryListing> => {
+      const result = await runBusyCommand("Loading directories", () =>
+        request<{ entries: ProjectEntry[]; truncated: boolean }>(
+          MOBILE_WS_METHODS.projectsSearchEntries,
+          {
+            cwd: input.cwd,
+            query: ".",
+            limit: 200,
+          },
+        ),
+      );
+
+      return {
+        cwd: input.cwd,
+        entries: result.entries.filter((entry) => entry.parentPath === undefined),
+        truncated: result.truncated,
+      };
+    },
+  );
+
+  const createDirectory = useStableEvent(async (input: CreateDirectoryInput) => {
+    await runBusyCommand("Creating folder", () =>
+      request<{ relativePath: string }>(MOBILE_WS_METHODS.projectsCreateDirectory, {
+        cwd: input.cwd,
+        relativePath: input.relativePath,
+      }),
+    );
+  });
+
   return {
     connectionSettings,
     setConnectionSettings,
@@ -536,9 +589,12 @@ export function useBackendConnection() {
     disconnect: () => disconnect(),
     refreshSnapshot: () => refreshSnapshot(),
     createProjectFromWelcome: () => createProjectFromWelcome(),
+    createProject: (input: CreateProjectInput) => createProject(input),
     createThread: (input: CreateThreadInput) => createThread(input),
     sendTurn: (input: SendTurnInput) => sendTurn(input),
     interruptTurn: (input: InterruptTurnInput) => interruptTurn(input),
     stopSession: (input: StopSessionInput) => stopSession(input),
+    searchDirectory: (input: SearchDirectoryInput) => searchDirectory(input),
+    createDirectory: (input: CreateDirectoryInput) => createDirectory(input),
   };
 }

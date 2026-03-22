@@ -23,11 +23,16 @@ import {
   GitRunStackedActionInput,
   GitStatusInput,
 } from "./git";
-import { ProjectSearchEntriesInput, ProjectWriteFileInput } from "./project";
+import {
+  ProjectCreateDirectoryInput,
+  ProjectSearchEntriesInput,
+  ProjectWriteFileInput,
+} from "./project";
 import { ServerConfigUpdatedPayload } from "./server";
 
 export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
+  projectsCreateDirectory: "projects.createDirectory",
   projectsWriteFile: "projects.writeFile",
   gitPull: "git.pull",
   gitStatus: "git.status",
@@ -66,6 +71,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(ORCHESTRATION_WS_METHODS.getFullThreadDiff, OrchestrationGetFullThreadDiffInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.replayEvents, OrchestrationReplayEventsInput),
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
+  tagRequestBody(WS_METHODS.projectsCreateDirectory, ProjectCreateDirectoryInput),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
   tagRequestBody(WS_METHODS.gitPull, GitPullInput),
   tagRequestBody(WS_METHODS.gitStatus, GitStatusInput),

@@ -1,5 +1,6 @@
 import type {
   OrchestrationReadModel,
+  ProjectEntry,
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig,
@@ -9,6 +10,8 @@ import type {
 export const MOBILE_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getSnapshot: "orchestration.getSnapshot",
+  projectsCreateDirectory: "projects.createDirectory",
+  projectsSearchEntries: "projects.searchEntries",
   serverGetConfig: "server.getConfig",
 } as const;
 
@@ -41,6 +44,12 @@ export interface CreateThreadInput {
   readonly model: string;
 }
 
+export interface CreateProjectInput {
+  readonly title: string;
+  readonly workspaceRoot: string;
+  readonly defaultModel?: string;
+}
+
 export interface SendTurnInput {
   readonly threadId: string;
   readonly text: string;
@@ -58,10 +67,25 @@ export interface StopSessionInput {
   readonly threadId: string;
 }
 
+export interface SearchDirectoryInput {
+  readonly cwd: string;
+}
+
+export interface CreateDirectoryInput {
+  readonly cwd: string;
+  readonly relativePath: string;
+}
+
 export interface MobileBackendState {
   readonly snapshot: OrchestrationReadModel | null;
   readonly serverConfig: ServerConfig | null;
   readonly welcome: WsWelcomePayload | null;
+}
+
+export interface DirectoryListing {
+  readonly cwd: string;
+  readonly entries: ProjectEntry[];
+  readonly truncated: boolean;
 }
 
 export function createClientId(prefix: string) {
