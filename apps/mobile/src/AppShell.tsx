@@ -1498,6 +1498,7 @@ function AppShellContent() {
     await updateThreadBranch({ threadId: selectedThread.id, branch });
     setGitBranchNameDraft(branch);
     await loadGitState(selectedWorkspaceRoot);
+    showToast(`Checked out ${branch}`);
   };
 
   const handleCreateBranchAndCheckout = async () => {
@@ -1510,49 +1511,74 @@ function AppShellContent() {
     await gitCheckout({ cwd: selectedWorkspaceRoot, branch });
     await updateThreadBranch({ threadId: selectedThread.id, branch });
     await loadGitState(selectedWorkspaceRoot);
+    showToast(`Checked out ${branch}`);
   };
 
-  const handleGitCommit = async () => {
+  const runGitAction = async (action: "commit" | "commit_push", commitMessage?: string) => {
     if (!selectedWorkspaceRoot) {
-      return;
+      return null;
     }
 
-    await gitRunStackedAction({
+    const result = await gitRunStackedAction({
       cwd: selectedWorkspaceRoot,
-      action: "commit",
-      commitMessage: gitCommitMessageDraft,
+      action,
+      ...(commitMessage ? { commitMessage } : {}),
     });
     await loadGitState(selectedWorkspaceRoot);
+    return result;
   };
 
-  const handleGitPush = async () => {
-    if (!selectedWorkspaceRoot) {
+  const showGitActionToast = (
+    action: "commit" | "commit_push",
+    result: NonNullable<Awaited<ReturnType<typeof runGitAction>>>,
+  ) => {
+    if (result.push.status === "pushed") {
+      showToast(
+        result.commit.status === "created" ? "Committed and pushed" : "Pushed current branch",
+      );
       return;
     }
 
-    await gitRunStackedAction({
-      cwd: selectedWorkspaceRoot,
-      action: "commit_push",
-      commitMessage: gitCommitMessageDraft,
-    });
-    await loadGitState(selectedWorkspaceRoot);
+    if (result.commit.status === "created") {
+      showToast(action === "commit" ? "Commit created" : "Committed on current branch");
+      return;
+    }
+
+    showToast("No changes to commit");
   };
 
-  const handleBranchCommitAndPush = async () => {
-    const branch = gitBranchNameDraft.trim();
-    if (!selectedWorkspaceRoot || !selectedThread || !branch) {
+  const handleGitAutoCommitAndPush = async () => {
+    const result = await runGitAction("commit_push");
+    if (!result) {
+      return;
+    }
+    showGitActionToast("commit_push", result);
+  };
+
+  const handleGitManualCommit = async () => {
+    const commitMessage = gitCommitMessageDraft.trim();
+    if (!commitMessage) {
       return;
     }
 
-    await gitCreateBranch({ cwd: selectedWorkspaceRoot, branch });
-    await gitCheckout({ cwd: selectedWorkspaceRoot, branch });
-    await updateThreadBranch({ threadId: selectedThread.id, branch });
-    await gitRunStackedAction({
-      cwd: selectedWorkspaceRoot,
-      action: "commit_push",
-      commitMessage: gitCommitMessageDraft,
-    });
-    await loadGitState(selectedWorkspaceRoot);
+    const result = await runGitAction("commit", commitMessage);
+    if (!result) {
+      return;
+    }
+    showGitActionToast("commit", result);
+  };
+
+  const handleGitManualCommitAndPush = async () => {
+    const commitMessage = gitCommitMessageDraft.trim();
+    if (!commitMessage) {
+      return;
+    }
+
+    const result = await runGitAction("commit_push", commitMessage);
+    if (!result) {
+      return;
+    }
+    showGitActionToast("commit_push", result);
   };
 
   const handleSend = async () => {
@@ -1647,6 +1673,8 @@ function AppShellContent() {
     selectedWorkspaceRoot !== null &&
     busyAction === null &&
     !sessionBusy;
+  const gitCurrentBranch = gitRepoStatus?.branch ?? selectedThread?.branch ?? null;
+  const gitManualCommitMessage = gitCommitMessageDraft.trim();
 
   const renderSidebar = () => (
     <View style={styles.sidebarRoot}>
@@ -2442,7 +2470,8 @@ function AppShellContent() {
             <Text style={styles.panelEyebrow}>Git</Text>
             <Text style={styles.panelTitle}>Workspace controls</Text>
             <Text style={styles.panelSubtitle}>
-              Commit, push, or create and check out a branch before committing and pushing.
+              Two flows: auto commit and push on the current branch, or create a branch and then
+              choose auto or manual commit actions.
             </Text>
           </View>
 
@@ -2458,11 +2487,7 @@ function AppShellContent() {
             </View>
 
             <View style={styles.compactList}>
-              <MetaRow
-                accent
-                label="Branch"
-                value={formatGitBranchLabel(gitRepoStatus?.branch ?? selectedThread.branch)}
-              />
+              <MetaRow accent label="Branch" value={formatGitBranchLabel(gitCurrentBranch)} />
               <MetaRow
                 label="Working tree"
                 value={
@@ -2514,8 +2539,26 @@ function AppShellContent() {
               />
             </View>
 
-            <View style={styles.projectPickerFieldGroup}>
-              <Text style={styles.navSectionLabel}>Branches</Text>
+            <View style={[styles.gitFlowSection, styles.gitFlowSectionFirst]}>
+              <Text style={styles.navSectionLabel}>Flow 1</Text>
+              <Text style={styles.gitFlowHeading}>Current branch</Text>
+              <Text style={styles.gitFlowDescription}>
+                Use the model to write a commit message and push the checked-out branch.
+              </Text>
+              <Text style={styles.gitFlowStatus}>
+                Running on {formatGitBranchLabel(gitCurrentBranch)}
+              </Text>
+              <ActionButton
+                disabled={!canRunGitOperations}
+                label="Auto Commit + Push"
+                onPress={() => {
+                  void handleGitAutoCommitAndPush();
+                }}
+              />
+            </View>
+
+            <View style={styles.gitFlowSection}>
+              <Text style={styles.navSectionLabel}>Existing branches</Text>
               <View style={styles.selectionList}>
                 {localBranches.length > 0 ? (
                   localBranches.map((branch: GitBranch) => (
@@ -2552,8 +2595,13 @@ function AppShellContent() {
               </View>
             </View>
 
-            <View style={styles.projectPickerFieldGroup}>
-              <Text style={styles.navSectionLabel}>New branch</Text>
+            <View style={styles.gitFlowSection}>
+              <Text style={styles.navSectionLabel}>Flow 2</Text>
+              <Text style={styles.gitFlowHeading}>Create a branch</Text>
+              <Text style={styles.gitFlowDescription}>
+                Start from the current branch and worktree with `checkout -b`, then either let the
+                model generate the commit message or enter one manually.
+              </Text>
               <View style={styles.projectPickerInputRow}>
                 <TextInput
                   autoCapitalize="none"
@@ -2575,47 +2623,48 @@ function AppShellContent() {
                   />
                 </View>
               </View>
-            </View>
-
-            <View style={styles.projectPickerFieldGroup}>
-              <Text style={styles.navSectionLabel}>Commit message</Text>
-              <TextInput
-                multiline
-                onChangeText={setGitCommitMessageDraft}
-                placeholder="feat: expose reasoning, delivery, and git controls"
-                placeholderTextColor={TERMINAL_MUTED}
-                style={[styles.input, styles.gitCommitInput]}
-                textAlignVertical="top"
-                value={gitCommitMessageDraft}
-              />
-            </View>
-
-            <View style={styles.inlineButtonRow}>
+              <Text style={styles.gitFlowStatus}>
+                Checked-out branch: {formatGitBranchLabel(gitCurrentBranch)}
+              </Text>
               <ActionButton
                 disabled={!canRunGitOperations}
                 emphasis="surface"
-                label="Commit"
+                label="Auto Commit + Push"
                 onPress={() => {
-                  void handleGitCommit();
+                  void handleGitAutoCommitAndPush();
                 }}
               />
-              <ActionButton
-                disabled={!canRunGitOperations}
-                emphasis="surface"
-                label="Push"
-                onPress={() => {
-                  void handleGitPush();
-                }}
-              />
+              <View style={styles.projectPickerFieldGroup}>
+                <Text style={styles.navSectionLabel}>Manual commit message</Text>
+                <TextInput
+                  multiline
+                  onChangeText={setGitCommitMessageDraft}
+                  placeholder="feat: expose reasoning, delivery, and git controls"
+                  placeholderTextColor={TERMINAL_MUTED}
+                  style={[styles.input, styles.gitCommitInput]}
+                  textAlignVertical="top"
+                  value={gitCommitMessageDraft}
+                />
+              </View>
+              <View style={styles.inlineButtonRow}>
+                <ActionButton
+                  disabled={!canRunGitOperations || !gitManualCommitMessage}
+                  emphasis="surface"
+                  label="Manual Commit"
+                  onPress={() => {
+                    void handleGitManualCommit();
+                  }}
+                />
+                <ActionButton
+                  disabled={!canRunGitOperations || !gitManualCommitMessage}
+                  emphasis="surface"
+                  label="Manual Commit + Push"
+                  onPress={() => {
+                    void handleGitManualCommitAndPush();
+                  }}
+                />
+              </View>
             </View>
-
-            <ActionButton
-              disabled={!canRunGitOperations || !gitBranchNameDraft.trim()}
-              label="Branch + Commit + Push"
-              onPress={() => {
-                void handleBranchCommitAndPush();
-              }}
-            />
           </ScrollView>
 
           <View style={styles.projectPickerFooter}>
@@ -4259,6 +4308,34 @@ function createStyles(theme: AppTheme) {
     },
     gitCommitInput: {
       minHeight: 90,
+    },
+    gitFlowSection: {
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
+      gap: 8,
+      paddingTop: 10,
+    },
+    gitFlowSectionFirst: {
+      borderTopWidth: 0,
+      paddingTop: 0,
+    },
+    gitFlowHeading: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      fontWeight: "700",
+    },
+    gitFlowDescription: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 15,
+    },
+    gitFlowStatus: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
     },
     buttonBase: {
       alignItems: "center",
