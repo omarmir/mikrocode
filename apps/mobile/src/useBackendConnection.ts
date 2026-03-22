@@ -1,6 +1,10 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 
 import type {
+  GitListBranchesResult,
+  GitPullResult,
+  GitRunStackedActionResult,
+  GitStatusResult,
   OrchestrationReadModel,
   ProjectEntry,
   ProviderInteractionMode,
@@ -20,8 +24,11 @@ import {
   type CreateDirectoryInput,
   type CreateProjectInput,
   type CreateThreadInput,
-  type GetConversationCapabilitiesInput,
   type DirectoryListing,
+  type GetConversationCapabilitiesInput,
+  type GitBranchInput,
+  type GitRunStackedActionInput,
+  type GitWorkspaceInput,
   type InterruptTurnInput,
   type PushMessage,
   type RpcResponse,
@@ -525,6 +532,8 @@ export function useBackendConnection() {
             attachments: [],
           },
           model: input.model,
+          ...(input.modelOptions ? { modelOptions: input.modelOptions } : {}),
+          assistantDeliveryMode: input.assistantDeliveryMode,
           runtimeMode: input.runtimeMode,
           interactionMode: input.interactionMode,
         }),
@@ -557,6 +566,18 @@ export function useBackendConnection() {
       );
     },
   );
+
+  const updateThreadBranch = useStableEvent(async (input: { threadId: string; branch: string }) => {
+    await runBusyCommand("Updating branch", () =>
+      dispatchCommand(
+        withCommandMeta({
+          type: "thread.meta.update",
+          threadId: input.threadId,
+          branch: input.branch.trim(),
+        }),
+      ),
+    );
+  });
 
   const getConversationCapabilities = useStableEvent(
     async (input: GetConversationCapabilitiesInput): Promise<ServerConversationCapabilities> => {
@@ -631,6 +652,62 @@ export function useBackendConnection() {
     );
   });
 
+  const gitStatus = useStableEvent(async (input: GitWorkspaceInput): Promise<GitStatusResult> => {
+    return runBusyCommand("Loading git status", () =>
+      request<GitStatusResult>(MOBILE_WS_METHODS.gitStatus, {
+        cwd: input.cwd,
+      }),
+    );
+  });
+
+  const gitListBranches = useStableEvent(
+    async (input: GitWorkspaceInput): Promise<GitListBranchesResult> => {
+      return runBusyCommand("Loading git branches", () =>
+        request<GitListBranchesResult>(MOBILE_WS_METHODS.gitListBranches, {
+          cwd: input.cwd,
+        }),
+      );
+    },
+  );
+
+  const gitPull = useStableEvent(async (input: GitWorkspaceInput): Promise<GitPullResult> => {
+    return runBusyCommand("Pulling branch", () =>
+      request<GitPullResult>(MOBILE_WS_METHODS.gitPull, {
+        cwd: input.cwd,
+      }),
+    );
+  });
+
+  const gitCreateBranch = useStableEvent(async (input: GitBranchInput): Promise<void> => {
+    await runBusyCommand("Creating branch", () =>
+      request<void>(MOBILE_WS_METHODS.gitCreateBranch, {
+        cwd: input.cwd,
+        branch: input.branch,
+      }),
+    );
+  });
+
+  const gitCheckout = useStableEvent(async (input: GitBranchInput): Promise<void> => {
+    await runBusyCommand("Checking out branch", () =>
+      request<void>(MOBILE_WS_METHODS.gitCheckout, {
+        cwd: input.cwd,
+        branch: input.branch,
+      }),
+    );
+  });
+
+  const gitRunStackedAction = useStableEvent(
+    async (input: GitRunStackedActionInput): Promise<GitRunStackedActionResult> => {
+      return runBusyCommand(`Git ${input.action}`, () =>
+        request<GitRunStackedActionResult>(MOBILE_WS_METHODS.gitRunStackedAction, {
+          cwd: input.cwd,
+          action: input.action,
+          ...(input.commitMessage?.trim() ? { commitMessage: input.commitMessage.trim() } : {}),
+        }),
+      );
+    },
+  );
+
   return {
     connectionSettings,
     setConnectionSettings,
@@ -654,6 +731,7 @@ export function useBackendConnection() {
     createThread: (input: CreateThreadInput) => createThread(input),
     sendTurn: (input: SendTurnInput) => sendTurn(input),
     updateThreadModel: (input: { threadId: string; model: string }) => updateThreadModel(input),
+    updateThreadBranch: (input: { threadId: string; branch: string }) => updateThreadBranch(input),
     updateThreadRuntimeMode: (input: { threadId: string; runtimeMode: RuntimeMode }) =>
       updateThreadRuntimeMode(input),
     getConversationCapabilities: (input: GetConversationCapabilitiesInput) =>
@@ -662,5 +740,11 @@ export function useBackendConnection() {
     stopSession: (input: StopSessionInput) => stopSession(input),
     searchDirectory: (input: SearchDirectoryInput) => searchDirectory(input),
     createDirectory: (input: CreateDirectoryInput) => createDirectory(input),
+    gitStatus: (input: GitWorkspaceInput) => gitStatus(input),
+    gitListBranches: (input: GitWorkspaceInput) => gitListBranches(input),
+    gitPull: (input: GitWorkspaceInput) => gitPull(input),
+    gitCreateBranch: (input: GitBranchInput) => gitCreateBranch(input),
+    gitCheckout: (input: GitBranchInput) => gitCheckout(input),
+    gitRunStackedAction: (input: GitRunStackedActionInput) => gitRunStackedAction(input),
   };
 }

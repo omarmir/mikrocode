@@ -1,6 +1,13 @@
 import type {
+  AssistantDeliveryMode,
+  GitListBranchesResult,
+  GitStackedAction,
+  GitRunStackedActionResult,
+  GitStatusResult,
   OrchestrationReadModel,
   ProjectEntry,
+  ProviderModelOptions,
+  ProviderReasoningEffort,
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig,
@@ -13,6 +20,12 @@ export const MOBILE_WS_METHODS = {
   getSnapshot: "orchestration.getSnapshot",
   projectsCreateDirectory: "projects.createDirectory",
   projectsSearchEntries: "projects.searchEntries",
+  gitCheckout: "git.checkout",
+  gitCreateBranch: "git.createBranch",
+  gitListBranches: "git.listBranches",
+  gitPull: "git.pull",
+  gitRunStackedAction: "git.runStackedAction",
+  gitStatus: "git.status",
   serverGetConfig: "server.getConfig",
   serverGetConversationCapabilities: "server.getConversationCapabilities",
 } as const;
@@ -58,6 +71,9 @@ export interface SendTurnInput {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly model: string;
+  readonly modelOptions?: ProviderModelOptions;
+  readonly reasoningEffort?: ProviderReasoningEffort | null;
+  readonly assistantDeliveryMode: AssistantDeliveryMode;
 }
 
 export interface InterruptTurnInput {
@@ -78,6 +94,20 @@ export interface CreateDirectoryInput {
   readonly relativePath: string;
 }
 
+export interface GitWorkspaceInput {
+  readonly cwd: string;
+}
+
+export interface GitBranchInput extends GitWorkspaceInput {
+  readonly branch: string;
+}
+
+export interface GitRunStackedActionInput {
+  readonly cwd: string;
+  readonly action: GitStackedAction;
+  readonly commitMessage?: string;
+}
+
 export interface GetConversationCapabilitiesInput {
   readonly threadId: string;
 }
@@ -95,6 +125,10 @@ export interface DirectoryListing {
   readonly entries: ProjectEntry[];
   readonly truncated: boolean;
 }
+
+export type MobileGitStatus = GitStatusResult;
+export type MobileGitBranches = GitListBranchesResult;
+export type MobileGitRunResult = GitRunStackedActionResult;
 
 export function createClientId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;

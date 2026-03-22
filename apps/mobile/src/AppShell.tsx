@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   Animated,
   Easing,
+  Keyboard,
   KeyboardAvoidingView,
   PanResponder,
   Platform,
@@ -16,13 +17,25 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
+import {
+  CLAUDE_CODE_EFFORT_OPTIONS,
+  CODEX_REASONING_EFFORT_OPTIONS,
+  DEFAULT_REASONING_EFFORT_BY_PROVIDER,
+} from "@t3tools/contracts";
 import type {
+  AssistantDeliveryMode,
+  ClaudeCodeEffort,
+  CodexReasoningEffort,
+  GitBranch,
+  GitListBranchesResult,
+  GitStatusResult,
   OrchestrationMessage,
   OrchestrationProject,
   OrchestrationThread,
   ProjectEntry,
+  ProviderReasoningEffort,
   RuntimeMode,
   ServerConversationCapabilities,
 } from "@t3tools/contracts";
@@ -48,6 +61,11 @@ const TERMINAL_TEXT = "#d8e6ff";
 const TERMINAL_MUTED = "#7f8ca8";
 const TERMINAL_ACCENT = "#7ef5b8";
 const TERMINAL_ACCENT_SOFT = "#133126";
+type ComposerPanelMode = "model" | "access" | "reasoning" | "delivery" | "git";
+type ThreadTurnPreference = {
+  readonly reasoningEffort: ProviderReasoningEffort | null;
+  readonly assistantDeliveryMode: AssistantDeliveryMode;
+};
 
 function formatProviderLabel(provider: "codex" | "claudeAgent") {
   return provider === "codex" ? "Codex" : "Claude Agent";
@@ -83,6 +101,19 @@ function formatConnectionLabel(status: string) {
 
 function formatRuntimeModeLabel(mode: RuntimeMode) {
   return mode === "full-access" ? "Full access" : "Approval required";
+}
+
+function formatReasoningEffortLabel(effort: ProviderReasoningEffort | null) {
+  return effort ? effort.toUpperCase() : "AUTO";
+}
+
+function formatAssistantDeliveryModeLabel(mode: AssistantDeliveryMode) {
+  return mode === "streaming" ? "LIVE" : "QUEUE";
+}
+
+function formatGitBranchLabel(branch: string | null | undefined) {
+  const trimmed = branch?.trim() ?? "";
+  return trimmed.length > 0 ? trimmed : "Detached HEAD";
 }
 
 function formatModelSwitchBehavior(
@@ -322,6 +353,12 @@ export function AppShell() {
     deleteProject,
     disconnect,
     errorMessage,
+    gitCheckout,
+    gitCreateBranch,
+    gitListBranches,
+    gitPull,
+    gitRunStackedAction,
+    gitStatus,
     getConversationCapabilities,
     interruptTurn,
     isRefreshingSnapshot,
@@ -336,10 +373,12 @@ export function AppShell() {
     snapshot,
     status,
     stopSession,
+    updateThreadBranch,
     updateThreadModel,
     updateThreadRuntimeMode,
     welcome,
   } = useBackendConnection();
+  const insets = useSafeAreaInsets();
 
   const { height, width } = useWindowDimensions();
   const sidebarPersistent = width >= PERSISTENT_SIDEBAR_BREAKPOINT;
@@ -357,9 +396,12 @@ export function AppShell() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [dismissedRecentThreadIds, setDismissedRecentThreadIds] = useState<string[]>([]);
   const [threadDrafts, setThreadDrafts] = useState<Record<string, string>>({});
+  const [threadTurnPreferences, setThreadTurnPreferences] = useState<
+    Record<string, ThreadTurnPreference>
+  >({});
   const [revealedMessageId, setRevealedMessageId] = useState<string | null>(null);
   const [projectBuilderOpen, setProjectBuilderOpen] = useState(false);
-  const [conversationPickerMode, setConversationPickerMode] = useState<"model" | "access" | null>(
+  const [conversationPickerMode, setConversationPickerMode] = useState<ComposerPanelMode | null>(
     null,
   );
   const [conversationCapabilities, setConversationCapabilities] =
@@ -370,6 +412,11 @@ export function AppShell() {
   const [directoryEntries, setDirectoryEntries] = useState<ProjectEntry[]>([]);
   const [directoryTruncated, setDirectoryTruncated] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const [gitRepoStatus, setGitRepoStatus] = useState<GitStatusResult | null>(null);
+  const [gitBranches, setGitBranches] = useState<GitListBranchesResult | null>(null);
+  const [isLoadingGitState, setIsLoadingGitState] = useState(false);
+  const [gitCommitMessageDraft, setGitCommitMessageDraft] = useState("");
+  const [gitBranchNameDraft, setGitBranchNameDraft] = useState("");
 
   const navTranslateX = useRef(new Animated.Value(-sidebarWidth)).current;
   const settingsTranslateX = useRef(new Animated.Value(floatingPanelWidth)).current;
@@ -377,6 +424,7 @@ export function AppShell() {
   const workspaceTranslateY = useRef(new Animated.Value(0)).current;
   const messageMetaOpacity = useRef(new Animated.Value(0)).current;
   const messageMetaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const messagesScrollRef = useRef<ScrollView | null>(null);
 
   const allProjects = sortProjects(snapshot?.projects ?? []);
   const visibleProjectIds = new Set(allProjects.map((project) => project.id));
@@ -412,6 +460,31 @@ export function AppShell() {
     selectedThread && conversationCapabilities?.threadId === selectedThread.id
       ? conversationCapabilities.runtimeModes
       : [];
+  const selectedWorkspaceRoot =
+    selectedThread?.worktreePath ?? selectedProject?.workspaceRoot ?? null;
+  const selectedReasoningOptions: ReadonlyArray<ProviderReasoningEffort> =
+    selectedConversationProvider === "codex"
+      ? CODEX_REASONING_EFFORT_OPTIONS
+      : selectedConversationProvider === "claudeAgent"
+        ? CLAUDE_CODE_EFFORT_OPTIONS
+        : [];
+  const selectedThreadTurnPreference = selectedThread
+    ? (() => {
+        const stored = threadTurnPreferences[selectedThread.id];
+        const defaultReasoning =
+          selectedConversationProvider && selectedReasoningOptions.length > 0
+            ? DEFAULT_REASONING_EFFORT_BY_PROVIDER[selectedConversationProvider]
+            : null;
+        const resolvedReasoning =
+          stored?.reasoningEffort && selectedReasoningOptions.includes(stored.reasoningEffort)
+            ? stored.reasoningEffort
+            : defaultReasoning;
+        return {
+          reasoningEffort: resolvedReasoning,
+          assistantDeliveryMode: stored?.assistantDeliveryMode ?? "buffered",
+        } satisfies ThreadTurnPreference;
+      })()
+    : null;
 
   const snapshotSequenceLabel = lastPushSequence === null ? "--" : `${lastPushSequence}`;
   const homeSubtitle = selectedProject
@@ -424,13 +497,19 @@ export function AppShell() {
     ? `${selectedConversationProvider ? formatProviderLabel(selectedConversationProvider) : "Provider"}${selectedThreadDisplayTitle !== "Conversation" ? ` / ${selectedThreadDisplayTitle}` : ""}`
     : homeSubtitle;
   const conversationPickerTitle =
-    conversationPickerMode === "model" ? "Switch model" : "Switch permission";
+    conversationPickerMode === "model"
+      ? "Switch model"
+      : conversationPickerMode === "access"
+        ? "Switch permission"
+        : "";
   const conversationPickerSubtitle =
     conversationPickerMode === "model"
       ? formatModelSwitchBehavior(conversationCapabilities?.modelSwitch ?? null)
-      : selectedThread?.session && selectedThread.session.status !== "stopped"
-        ? "Changing access restarts the active provider session immediately."
-        : "Access mode applies to the next session start.";
+      : conversationPickerMode === "access"
+        ? selectedThread?.session && selectedThread.session.status !== "stopped"
+          ? "Changing access restarts the active provider session immediately."
+          : "Access mode applies to the next session start."
+        : "";
 
   useEffect(() => {
     if (sidebarPersistent) {
@@ -487,6 +566,33 @@ export function AppShell() {
       }
     };
   }, []);
+
+  const scrollConversationToEnd = () => {
+    messagesScrollRef.current?.scrollToEnd({ animated: true });
+  };
+
+  useEffect(() => {
+    if (!selectedThreadConversationId) {
+      return;
+    }
+
+    const keyboardShowEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const subscription = Keyboard.addListener(keyboardShowEvent, () => {
+      requestAnimationFrame(scrollConversationToEnd);
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [selectedThreadConversationId]);
+
+  useEffect(() => {
+    if (!selectedThreadConversationId) {
+      return;
+    }
+
+    requestAnimationFrame(scrollConversationToEnd);
+  }, [messages.length, selectedThreadConversationId]);
 
   const animatePanel = (
     animatedValue: Animated.Value,
@@ -606,6 +712,38 @@ export function AppShell() {
     setThreadDrafts((current) => ({ ...current, [selectedThread.id]: value }));
   };
 
+  const updateThreadTurnPreference = (patch: Partial<ThreadTurnPreference>) => {
+    if (!selectedThread) {
+      return;
+    }
+
+    setThreadTurnPreferences((current) => ({
+      ...current,
+      [selectedThread.id]: {
+        reasoningEffort:
+          patch.reasoningEffort ?? current[selectedThread.id]?.reasoningEffort ?? null,
+        assistantDeliveryMode:
+          patch.assistantDeliveryMode ??
+          current[selectedThread.id]?.assistantDeliveryMode ??
+          "buffered",
+      },
+    }));
+  };
+
+  const loadGitState = async (cwd: string) => {
+    setIsLoadingGitState(true);
+    try {
+      const [nextStatus, nextBranches] = await Promise.all([
+        gitStatus({ cwd }),
+        gitListBranches({ cwd }),
+      ]);
+      setGitRepoStatus(nextStatus);
+      setGitBranches(nextBranches);
+    } finally {
+      setIsLoadingGitState(false);
+    }
+  };
+
   const loadDirectory = async (cwd: string) => {
     const listing = await searchDirectory({ cwd });
     setDirectoryCwd(listing.cwd);
@@ -648,6 +786,11 @@ export function AppShell() {
     );
     setConversationPickerMode(null);
     setIsLoadingConversationCapabilities(false);
+    setGitRepoStatus(null);
+    setGitBranches(null);
+    setIsLoadingGitState(false);
+    setGitCommitMessageDraft("");
+    setGitBranchNameDraft("");
   }, [selectedThreadConversationId]);
 
   const handleResetProjectDirectory = async () => {
@@ -785,12 +928,23 @@ export function AppShell() {
     setConversationPickerMode(null);
   };
 
-  const openConversationPicker = async (mode: "model" | "access") => {
+  const openConversationPicker = async (mode: ComposerPanelMode) => {
     clearError();
     if (!selectedThread) {
       return;
     }
     setConversationPickerMode(mode);
+
+    if (mode === "git") {
+      if (selectedWorkspaceRoot) {
+        await loadGitState(selectedWorkspaceRoot);
+      }
+      return;
+    }
+
+    if (mode === "reasoning" || mode === "delivery") {
+      return;
+    }
 
     if (conversationCapabilities?.threadId === selectedThread.id) {
       return;
@@ -805,6 +959,16 @@ export function AppShell() {
     } finally {
       setIsLoadingConversationCapabilities(false);
     }
+  };
+
+  const handleSelectReasoningEffort = (effort: ProviderReasoningEffort | null) => {
+    updateThreadTurnPreference({ reasoningEffort: effort });
+    closeConversationPicker();
+  };
+
+  const handleSelectAssistantDeliveryMode = (mode: AssistantDeliveryMode) => {
+    updateThreadTurnPreference({ assistantDeliveryMode: mode });
+    closeConversationPicker();
   };
 
   const handleSelectConversationModel = async (model: string) => {
@@ -841,6 +1005,87 @@ export function AppShell() {
     closeConversationPicker();
   };
 
+  const handleRefreshGitState = async () => {
+    if (!selectedWorkspaceRoot) {
+      return;
+    }
+    await loadGitState(selectedWorkspaceRoot);
+  };
+
+  const handlePullBranch = async () => {
+    if (!selectedWorkspaceRoot) {
+      return;
+    }
+    await gitPull({ cwd: selectedWorkspaceRoot });
+    await loadGitState(selectedWorkspaceRoot);
+  };
+
+  const handleCheckoutBranch = async (branch: string) => {
+    if (!selectedWorkspaceRoot || !selectedThread) {
+      return;
+    }
+
+    await gitCheckout({ cwd: selectedWorkspaceRoot, branch });
+    await updateThreadBranch({ threadId: selectedThread.id, branch });
+    setGitBranchNameDraft(branch);
+    await loadGitState(selectedWorkspaceRoot);
+  };
+
+  const handleCreateBranchAndCheckout = async () => {
+    const branch = gitBranchNameDraft.trim();
+    if (!selectedWorkspaceRoot || !selectedThread || !branch) {
+      return;
+    }
+
+    await gitCreateBranch({ cwd: selectedWorkspaceRoot, branch });
+    await gitCheckout({ cwd: selectedWorkspaceRoot, branch });
+    await updateThreadBranch({ threadId: selectedThread.id, branch });
+    await loadGitState(selectedWorkspaceRoot);
+  };
+
+  const handleGitCommit = async () => {
+    if (!selectedWorkspaceRoot) {
+      return;
+    }
+
+    await gitRunStackedAction({
+      cwd: selectedWorkspaceRoot,
+      action: "commit",
+      commitMessage: gitCommitMessageDraft,
+    });
+    await loadGitState(selectedWorkspaceRoot);
+  };
+
+  const handleGitPush = async () => {
+    if (!selectedWorkspaceRoot) {
+      return;
+    }
+
+    await gitRunStackedAction({
+      cwd: selectedWorkspaceRoot,
+      action: "commit_push",
+      commitMessage: gitCommitMessageDraft,
+    });
+    await loadGitState(selectedWorkspaceRoot);
+  };
+
+  const handleBranchCommitAndPush = async () => {
+    const branch = gitBranchNameDraft.trim();
+    if (!selectedWorkspaceRoot || !selectedThread || !branch) {
+      return;
+    }
+
+    await gitCreateBranch({ cwd: selectedWorkspaceRoot, branch });
+    await gitCheckout({ cwd: selectedWorkspaceRoot, branch });
+    await updateThreadBranch({ threadId: selectedThread.id, branch });
+    await gitRunStackedAction({
+      cwd: selectedWorkspaceRoot,
+      action: "commit_push",
+      commitMessage: gitCommitMessageDraft,
+    });
+    await loadGitState(selectedWorkspaceRoot);
+  };
+
   const handleSend = async () => {
     const trimmed = draft.trim();
     if (!trimmed || !selectedThread) {
@@ -853,12 +1098,31 @@ export function AppShell() {
       runtimeMode: selectedThread.runtimeMode,
       interactionMode: selectedThread.interactionMode,
       model: selectedThread.model,
+      assistantDeliveryMode: selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered",
+      modelOptions:
+        selectedConversationProvider === "codex" && selectedThreadTurnPreference?.reasoningEffort
+          ? {
+              codex: {
+                reasoningEffort:
+                  selectedThreadTurnPreference.reasoningEffort as CodexReasoningEffort,
+              },
+            }
+          : selectedConversationProvider === "claudeAgent" &&
+              selectedThreadTurnPreference?.reasoningEffort
+            ? {
+                claudeAgent: {
+                  effort: selectedThreadTurnPreference.reasoningEffort as ClaudeCodeEffort,
+                },
+              }
+            : undefined,
     });
 
     setThreadDrafts((current) => ({ ...current, [selectedThread.id]: "" }));
   };
 
   const sessionStatus = selectedThread?.session?.status ?? "idle";
+  const sessionBusy =
+    selectedThread?.latestTurn?.state === "running" || sessionStatus === "running";
   const canInterrupt =
     isConnected &&
     selectedThread !== null &&
@@ -868,6 +1132,12 @@ export function AppShell() {
     selectedThread !== null &&
     selectedThread.session !== null &&
     selectedThread.session.status !== "stopped";
+  const canRunGitOperations =
+    isConnected &&
+    selectedThread !== null &&
+    selectedWorkspaceRoot !== null &&
+    busyAction === null &&
+    !sessionBusy;
 
   const renderSidebar = () => (
     <View style={styles.sidebarRoot}>
@@ -1151,8 +1421,13 @@ export function AppShell() {
       ) : null}
 
       <ScrollView
+        ref={messagesScrollRef}
         contentContainerStyle={styles.messagesScrollContent}
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         keyboardShouldPersistTaps="handled"
+        onContentSizeChange={() => {
+          requestAnimationFrame(scrollConversationToEnd);
+        }}
         refreshControl={
           <RefreshControl
             onRefresh={refreshSnapshot}
@@ -1264,6 +1539,57 @@ export function AppShell() {
               {selectedThread?.runtimeMode === "approval-required" ? "ASK" : "FULL"}
             </Text>
           </Pressable>
+          <Pressable
+            disabled={
+              !selectedThread || busyAction !== null || selectedReasoningOptions.length === 0
+            }
+            onPress={() => {
+              void openConversationPicker("reasoning");
+            }}
+            style={[
+              styles.composerControlButton,
+              styles.composerControlButtonCompact,
+              (!selectedThread || busyAction !== null || selectedReasoningOptions.length === 0) &&
+                styles.buttonDisabled,
+            ]}
+          >
+            <Text numberOfLines={1} style={styles.composerControlValue}>
+              {formatReasoningEffortLabel(selectedThreadTurnPreference?.reasoningEffort ?? null)}
+            </Text>
+          </Pressable>
+          <Pressable
+            disabled={!selectedThread || busyAction !== null}
+            onPress={() => {
+              void openConversationPicker("delivery");
+            }}
+            style={[
+              styles.composerControlButton,
+              styles.composerControlButtonCompact,
+              (!selectedThread || busyAction !== null) && styles.buttonDisabled,
+            ]}
+          >
+            <Text numberOfLines={1} style={styles.composerControlValue}>
+              {formatAssistantDeliveryModeLabel(
+                selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered",
+              )}
+            </Text>
+          </Pressable>
+          <Pressable
+            disabled={!selectedThread || !selectedWorkspaceRoot || busyAction !== null}
+            onPress={() => {
+              void openConversationPicker("git");
+            }}
+            style={[
+              styles.composerControlButton,
+              styles.composerControlButtonCompact,
+              (!selectedThread || !selectedWorkspaceRoot || busyAction !== null) &&
+                styles.buttonDisabled,
+            ]}
+          >
+            <Text numberOfLines={1} style={styles.composerControlValue}>
+              GIT
+            </Text>
+          </Pressable>
         </View>
         <Text
           style={[
@@ -1276,11 +1602,14 @@ export function AppShell() {
         >
           {isLoadingConversationCapabilities
             ? "Loading backend capability map..."
-            : `${selectedConversationProvider ? formatProviderLabel(selectedConversationProvider) : "Provider"} / ${selectedThread?.session?.status ?? "idle"}${selectedConversationProviderStatus?.message ? ` / ${selectedConversationProviderStatus.message}` : ` / ${formatModelSwitchBehavior(conversationCapabilities?.modelSwitch ?? null)}`}`}
+            : `${selectedConversationProvider ? formatProviderLabel(selectedConversationProvider) : "Provider"} / ${selectedThread?.session?.status ?? "idle"} / ${formatAssistantDeliveryModeLabel(selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered")}${selectedConversationProviderStatus?.message ? ` / ${selectedConversationProviderStatus.message}` : ` / ${formatModelSwitchBehavior(conversationCapabilities?.modelSwitch ?? null)}`}`}
         </Text>
         <TextInput
           multiline
           onChangeText={updateDraft}
+          onFocus={() => {
+            requestAnimationFrame(scrollConversationToEnd);
+          }}
           placeholder="Type the next instruction..."
           placeholderTextColor={TERMINAL_MUTED}
           style={styles.composerInput}
@@ -1321,7 +1650,11 @@ export function AppShell() {
           <View style={styles.composerRunAction}>
             <ActionButton
               disabled={!selectedThread || !draft.trim() || !isConnected || busyAction !== null}
-              label="Run"
+              label={
+                (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") === "streaming"
+                  ? "Send"
+                  : "Queue"
+              }
               onPress={() => {
                 void handleSend();
               }}
@@ -1337,7 +1670,17 @@ export function AppShell() {
       return null;
     }
 
-    const rows =
+    type PickerRow = {
+      readonly key: string;
+      readonly title: string;
+      readonly meta: string | null;
+      readonly current: boolean;
+      readonly available: boolean;
+      readonly reason: string | null;
+      readonly onPress: () => void;
+    };
+
+    const rows: ReadonlyArray<PickerRow> =
       conversationPickerMode === "model"
         ? currentModelOptions.map((option) => ({
             key: option.slug,
@@ -1350,20 +1693,266 @@ export function AppShell() {
               void handleSelectConversationModel(option.slug);
             },
           }))
-        : currentRuntimeModeOptions.map((option) => ({
-            key: option.mode,
-            title: formatRuntimeModeLabel(option.mode),
-            meta:
-              option.mode === "full-access"
-                ? "Bypass permission prompts for tools and file changes."
-                : "Require approval before tools and file mutations run.",
-            current: option.mode === selectedThread.runtimeMode,
-            available: option.granted,
-            reason: option.reason ?? null,
-            onPress: () => {
-              void handleSelectConversationRuntimeMode(option.mode);
+        : conversationPickerMode === "access"
+          ? currentRuntimeModeOptions.map((option) => ({
+              key: option.mode,
+              title: formatRuntimeModeLabel(option.mode),
+              meta:
+                option.mode === "full-access"
+                  ? "Bypass permission prompts for tools and file changes."
+                  : "Require approval before tools and file mutations run.",
+              current: option.mode === selectedThread.runtimeMode,
+              available: option.granted,
+              reason: option.reason ?? null,
+              onPress: () => {
+                void handleSelectConversationRuntimeMode(option.mode);
+              },
+            }))
+          : conversationPickerMode === "reasoning"
+            ? selectedReasoningOptions.map((effort: ProviderReasoningEffort) => ({
+                key: effort,
+                title: formatReasoningEffortLabel(effort),
+                meta:
+                  selectedConversationProvider === "codex"
+                    ? "Controls model reasoning effort for the next turn."
+                    : "Controls Claude thinking effort for the next turn.",
+                current: effort === selectedThreadTurnPreference?.reasoningEffort,
+                available: true,
+                reason: null,
+                onPress: () => {
+                  handleSelectReasoningEffort(effort);
+                },
+              }))
+            : conversationPickerMode === "delivery"
+              ? ([
+                  {
+                    key: "buffered",
+                    title: "Queue reply",
+                    meta: "Buffer assistant output and reveal it when the turn finishes.",
+                    current:
+                      (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") ===
+                      "buffered",
+                    available: true,
+                    reason: null,
+                    onPress: () => {
+                      handleSelectAssistantDeliveryMode("buffered");
+                    },
+                  },
+                  {
+                    key: "streaming",
+                    title: "Send immediately",
+                    meta: "Stream assistant deltas into the conversation as they arrive.",
+                    current:
+                      (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") ===
+                      "streaming",
+                    available: true,
+                    reason: null,
+                    onPress: () => {
+                      handleSelectAssistantDeliveryMode("streaming");
+                    },
+                  },
+                ] as const)
+              : [];
+
+    if (conversationPickerMode === "git") {
+      const localBranches = (gitBranches?.branches ?? []).filter((branch) => !branch.isRemote);
+
+      return (
+        <View
+          style={[
+            styles.conversationPickerCard,
+            {
+              maxHeight: conversationPickerHeight,
+              width: conversationPickerWidth,
             },
-          }));
+          ]}
+        >
+          <View style={styles.projectPickerHeader}>
+            <Text style={styles.panelEyebrow}>Git</Text>
+            <Text style={styles.panelTitle}>Workspace controls</Text>
+            <Text style={styles.panelSubtitle}>
+              Commit, push, or create and check out a branch before committing and pushing.
+            </Text>
+          </View>
+
+          <ScrollView
+            contentContainerStyle={styles.projectPickerScrollContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={styles.projectPickerPathPanel}>
+              <Text style={styles.projectPickerPathLabel}>Workspace</Text>
+              <Text style={styles.projectPickerPathValue}>
+                {selectedWorkspaceRoot ?? "No workspace attached to this conversation."}
+              </Text>
+            </View>
+
+            <View style={styles.compactList}>
+              <MetaRow
+                accent
+                label="Branch"
+                value={formatGitBranchLabel(gitRepoStatus?.branch ?? selectedThread.branch)}
+              />
+              <MetaRow
+                label="Working tree"
+                value={
+                  gitRepoStatus
+                    ? gitRepoStatus.hasWorkingTreeChanges
+                      ? `${gitRepoStatus.workingTree.files.length} files / +${gitRepoStatus.workingTree.insertions} -${gitRepoStatus.workingTree.deletions}`
+                      : "Clean"
+                    : isLoadingGitState
+                      ? "Loading..."
+                      : "Unavailable"
+                }
+              />
+              <MetaRow
+                label="Upstream"
+                value={
+                  gitRepoStatus
+                    ? gitRepoStatus.hasUpstream
+                      ? `ahead ${gitRepoStatus.aheadCount} / behind ${gitRepoStatus.behindCount}`
+                      : "No upstream configured"
+                    : "Unavailable"
+                }
+              />
+            </View>
+
+            {sessionBusy ? (
+              <Text style={styles.selectionRowReason}>
+                Stop the active turn before running branch-changing Git actions.
+              </Text>
+            ) : null}
+
+            <View style={styles.inlineButtonRow}>
+              <ActionButton
+                compact
+                disabled={!selectedWorkspaceRoot || busyAction !== null}
+                emphasis="secondary"
+                label="Refresh"
+                onPress={() => {
+                  void handleRefreshGitState();
+                }}
+              />
+              <ActionButton
+                compact
+                disabled={!canRunGitOperations}
+                emphasis="ghost"
+                label="Pull"
+                onPress={() => {
+                  void handlePullBranch();
+                }}
+              />
+            </View>
+
+            <View style={styles.projectPickerFieldGroup}>
+              <Text style={styles.navSectionLabel}>Branches</Text>
+              <View style={styles.selectionList}>
+                {localBranches.length > 0 ? (
+                  localBranches.map((branch: GitBranch) => (
+                    <Pressable
+                      key={branch.name}
+                      disabled={!canRunGitOperations || branch.current}
+                      onPress={() => {
+                        void handleCheckoutBranch(branch.name);
+                      }}
+                      style={[
+                        styles.selectionRow,
+                        branch.current && styles.selectionRowCurrent,
+                        (!canRunGitOperations || branch.current) && styles.buttonDisabled,
+                      ]}
+                    >
+                      <View style={styles.selectionRowCopy}>
+                        <View style={styles.selectionRowHeading}>
+                          <Text style={styles.selectionRowTitle}>{branch.name}</Text>
+                          {branch.current ? (
+                            <Text style={styles.selectionRowCurrentTag}>Current</Text>
+                          ) : null}
+                        </View>
+                        <Text style={styles.selectionRowMeta}>
+                          {branch.isDefault ? "Default branch" : "Tap to check out"}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  ))
+                ) : (
+                  <Text style={styles.helperText}>
+                    {isLoadingGitState ? "Loading branches..." : "No local branches found."}
+                  </Text>
+                )}
+              </View>
+            </View>
+
+            <View style={styles.projectPickerFieldGroup}>
+              <Text style={styles.navSectionLabel}>New branch</Text>
+              <View style={styles.projectPickerInputRow}>
+                <TextInput
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  onChangeText={setGitBranchNameDraft}
+                  placeholder="feature/mobile-controls"
+                  placeholderTextColor={TERMINAL_MUTED}
+                  style={[styles.input, styles.projectPickerInput]}
+                  value={gitBranchNameDraft}
+                />
+                <View style={styles.projectPickerActionCell}>
+                  <ActionButton
+                    disabled={!canRunGitOperations || !gitBranchNameDraft.trim()}
+                    emphasis="ghost"
+                    label="checkout -b"
+                    onPress={() => {
+                      void handleCreateBranchAndCheckout();
+                    }}
+                  />
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.projectPickerFieldGroup}>
+              <Text style={styles.navSectionLabel}>Commit message</Text>
+              <TextInput
+                multiline
+                onChangeText={setGitCommitMessageDraft}
+                placeholder="feat: expose reasoning, delivery, and git controls"
+                placeholderTextColor={TERMINAL_MUTED}
+                style={[styles.input, styles.gitCommitInput]}
+                textAlignVertical="top"
+                value={gitCommitMessageDraft}
+              />
+            </View>
+
+            <View style={styles.inlineButtonRow}>
+              <ActionButton
+                disabled={!canRunGitOperations}
+                emphasis="surface"
+                label="Commit"
+                onPress={() => {
+                  void handleGitCommit();
+                }}
+              />
+              <ActionButton
+                disabled={!canRunGitOperations}
+                emphasis="surface"
+                label="Push"
+                onPress={() => {
+                  void handleGitPush();
+                }}
+              />
+            </View>
+
+            <ActionButton
+              disabled={!canRunGitOperations || !gitBranchNameDraft.trim()}
+              label="Branch + Commit + Push"
+              onPress={() => {
+                void handleBranchCommitAndPush();
+              }}
+            />
+          </ScrollView>
+
+          <View style={styles.projectPickerFooter}>
+            <ActionButton emphasis="secondary" label="Close" onPress={closeConversationPicker} />
+          </View>
+        </View>
+      );
+    }
 
     return (
       <View
@@ -1381,8 +1970,20 @@ export function AppShell() {
               ? formatProviderLabel(selectedConversationProvider)
               : "Conversation"}
           </Text>
-          <Text style={styles.panelTitle}>{conversationPickerTitle}</Text>
-          <Text style={styles.panelSubtitle}>{conversationPickerSubtitle}</Text>
+          <Text style={styles.panelTitle}>
+            {conversationPickerMode === "reasoning"
+              ? "Reasoning effort"
+              : conversationPickerMode === "delivery"
+                ? "Reply delivery"
+                : conversationPickerTitle}
+          </Text>
+          <Text style={styles.panelSubtitle}>
+            {conversationPickerMode === "reasoning"
+              ? "Pick how much reasoning effort the next turn should use."
+              : conversationPickerMode === "delivery"
+                ? "Choose whether assistant replies should queue or stream immediately."
+                : conversationPickerSubtitle}
+          </Text>
         </View>
 
         <ScrollView
@@ -1391,10 +1992,16 @@ export function AppShell() {
         >
           <View style={styles.projectPickerPathPanel}>
             <Text style={styles.projectPickerPathLabel}>
-              {isLoadingConversationCapabilities ? "Loading" : "Selected session"}
+              {conversationPickerMode === "model" || conversationPickerMode === "access"
+                ? isLoadingConversationCapabilities
+                  ? "Loading"
+                  : "Selected session"
+                : "Selected session"}
             </Text>
             <Text style={styles.projectPickerPathValue}>
-              {isLoadingConversationCapabilities
+              {conversationPickerMode !== "reasoning" &&
+              conversationPickerMode !== "delivery" &&
+              isLoadingConversationCapabilities
                 ? "Reading the backend capability map for this conversation."
                 : getThreadDisplayTitle(selectedThread)}
             </Text>
@@ -1697,7 +2304,8 @@ export function AppShell() {
         <StatusBar style="light" />
         <View style={styles.shellBackground}>
           <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            keyboardVerticalOffset={insets.top}
             style={styles.keyboardAvoider}
           >
             <View style={styles.shellLayout}>
@@ -2598,6 +3206,7 @@ const styles = StyleSheet.create({
   },
   composerControlStrip: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 6,
   },
   composerControlButton: {
@@ -2609,6 +3218,10 @@ const styles = StyleSheet.create({
     minHeight: 32,
     paddingHorizontal: 8,
     paddingVertical: 6,
+  },
+  composerControlButtonCompact: {
+    flexGrow: 0,
+    minWidth: 74,
   },
   composerControlButtonAccess: {
     flex: 0,
@@ -2657,6 +3270,9 @@ const styles = StyleSheet.create({
   },
   composerRunAction: {
     minWidth: 112,
+  },
+  gitCommitInput: {
+    minHeight: 90,
   },
   buttonBase: {
     alignItems: "center",
