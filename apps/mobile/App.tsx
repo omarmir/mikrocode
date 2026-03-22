@@ -88,9 +88,17 @@ function joinDirectoryPath(base: string, relativePath: string) {
 function createThreadTitle(input: string) {
   const trimmed = input.trim().replace(/\s+/g, " ");
   if (trimmed.length === 0) {
-    return "New thread";
+    return "Conversation";
   }
   return trimmed.slice(0, 64);
+}
+
+function getThreadDisplayTitle(thread: OrchestrationThread | null) {
+  const title = thread?.title.trim();
+  if (!title || title.toLowerCase() === "new thread") {
+    return "Conversation";
+  }
+  return title;
 }
 
 function AppShell() {
@@ -355,7 +363,9 @@ function AppShell() {
             </Pressable>
             <View style={styles.topBarCenter}>
               <Text style={styles.topBarEyebrow}>Mikrocode Mobile</Text>
-              <Text style={styles.topBarTitle}>{selectedThread?.title ?? "Session overview"}</Text>
+              <Text style={styles.topBarTitle}>
+                {selectedThread ? getThreadDisplayTitle(selectedThread) : "Session overview"}
+              </Text>
               <Text style={styles.topBarSubtitle}>
                 {selectedProject?.title ?? "No project selected"}
               </Text>
@@ -440,7 +450,9 @@ function AppShell() {
             ) : null}
 
             <View style={[styles.block, styles.threadBlock]}>
-              <Text style={styles.sectionTitle}>{selectedThread?.title ?? "Conversation"}</Text>
+              <Text style={styles.sectionTitle}>
+                {selectedThread ? getThreadDisplayTitle(selectedThread) : "Conversation"}
+              </Text>
               <Text style={styles.mutedText}>
                 {selectedThread
                   ? `${selectedThread.model} / ${selectedThread.runtimeMode} / ${selectedThread.interactionMode}`
@@ -599,7 +611,9 @@ function AppShell() {
                                         selectedThread?.id === thread.id && styles.menuItemActive,
                                       ]}
                                     >
-                                      <Text style={styles.menuTitle}>{thread.title}</Text>
+                                      <Text style={styles.menuTitle}>
+                                        {getThreadDisplayTitle(thread)}
+                                      </Text>
                                       <Text style={styles.menuMeta}>
                                         {thread.model} / {thread.session?.status ?? "idle"}
                                       </Text>

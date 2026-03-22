@@ -485,7 +485,7 @@ export function useBackendConnection() {
           type: "thread.create",
           threadId,
           projectId: input.projectId,
-          title: input.title.trim() || "New thread",
+          title: input.title.trim() || "Conversation",
           model: input.model,
           runtimeMode: "full-access" satisfies RuntimeMode,
           interactionMode: "default" satisfies ProviderInteractionMode,
