@@ -1,5 +1,7 @@
 import { StatusBar } from "expo-status-bar";
+import { Feather } from "@expo/vector-icons";
 import {
+  type ComponentProps,
   createContext,
   type ReactNode,
   useContext,
@@ -69,11 +71,12 @@ const TERMINAL_FONT_FAMILY = Platform.select({
   android: "monospace",
   default: "monospace",
 });
-type ComposerPanelMode = "model" | "reasoning" | "delivery" | "git";
+type ComposerPanelMode = "model" | "reasoning" | "git";
 type ThreadTurnPreference = {
   readonly reasoningEffort: ProviderReasoningEffort | null;
   readonly assistantDeliveryMode: AssistantDeliveryMode;
 };
+type FeatherIconName = ComponentProps<typeof Feather>["name"];
 
 function formatProviderLabel(provider: "codex" | "claudeAgent") {
   return provider === "codex" ? "Codex" : "Claude Agent";
@@ -111,16 +114,12 @@ function formatReasoningEffortLabel(effort: ProviderReasoningEffort | null) {
   return effort ? effort.toUpperCase() : "AUTO";
 }
 
-function formatAssistantDeliveryModeLabel(mode: AssistantDeliveryMode) {
-  return mode === "streaming" ? "LIVE" : "QUEUE";
+function formatRuntimeModeIcon(mode: RuntimeMode): FeatherIconName {
+  return mode === "full-access" ? "unlock" : "lock";
 }
 
-function formatRuntimeModeIcon(mode: RuntimeMode) {
-  return mode === "full-access" ? "🔓" : "🔒";
-}
-
-function formatAssistantDeliveryModeIcon(mode: AssistantDeliveryMode) {
-  return mode === "streaming" ? "»" : "≡";
+function formatAssistantDeliveryModeIcon(mode: AssistantDeliveryMode): FeatherIconName {
+  return mode === "streaming" ? "chevrons-right" : "clock";
 }
 
 function getThemeNeutralLabel(base: AppThemeNeutral) {
@@ -216,12 +215,33 @@ function createThreadTitle(projectTitle: string) {
   return `${projectTitle.trim() || "Conversation"} ${stamp}`.slice(0, 64);
 }
 
+const GENERATED_THREAD_STAMP_PATTERN =
+  /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{1,2}:\d{2}(?:\s?(?:AM|PM|A\.M\.|P\.M\.|a\.m\.|p\.m\.))?$/;
+
 function getThreadDisplayTitle(thread: OrchestrationThread | null) {
   const title = thread?.title.trim();
   if (!title || title.toLowerCase() === "new thread") {
     return "Conversation";
   }
   return title;
+}
+
+function getRecentThreadDisplayTitle(thread: OrchestrationThread, projectTitle: string) {
+  const displayTitle = getThreadDisplayTitle(thread);
+  const normalizedProjectTitle = projectTitle.trim();
+  if (!normalizedProjectTitle) {
+    return displayTitle;
+  }
+
+  const trailingSegment = displayTitle.slice(normalizedProjectTitle.length).trimStart();
+  if (
+    displayTitle.toLowerCase().startsWith(normalizedProjectTitle.toLowerCase()) &&
+    GENERATED_THREAD_STAMP_PATTERN.test(trailingSegment)
+  ) {
+    return normalizedProjectTitle;
+  }
+
+  return displayTitle;
 }
 
 function getSessionTone(thread: OrchestrationThread | null) {
@@ -285,10 +305,10 @@ function IconButton({
 }: {
   readonly accessibilityLabel: string;
   readonly disabled?: boolean;
-  readonly icon: string;
+  readonly icon: FeatherIconName;
   readonly onPress: () => void;
 }) {
-  const { styles } = useAppThemeContext();
+  const { styles, theme } = useAppThemeContext();
   return (
     <Pressable
       accessibilityLabel={accessibilityLabel}
@@ -296,13 +316,31 @@ function IconButton({
       onPress={onPress}
       style={[styles.iconButton, disabled && styles.buttonDisabled]}
     >
-      <Text
+      <Feather
         accessibilityElementsHidden
+        color={theme.text}
         importantForAccessibility="no-hide-descendants"
-        style={styles.iconButtonLabel}
-      >
-        {icon}
-      </Text>
+        name={icon}
+        size={16}
+      />
+    </Pressable>
+  );
+}
+
+function SidebarNavButton({
+  icon,
+  label,
+  onPress,
+}: {
+  readonly icon: FeatherIconName;
+  readonly label: string;
+  readonly onPress: () => void;
+}) {
+  const { styles, theme } = useAppThemeContext();
+  return (
+    <Pressable onPress={onPress} style={styles.sidebarNavButton}>
+      <Feather color={theme.text} name={icon} size={16} />
+      <Text style={styles.sidebarNavButtonLabel}>{label}</Text>
     </Pressable>
   );
 }
@@ -328,16 +366,32 @@ function MetaRow({
 }
 
 function SwipeDismissRow({
+  actionDisabled = false,
+  actionIcon = "trash-2",
   children,
-  onDismiss,
+  onAction,
   onPress,
 }: {
+  readonly actionDisabled?: boolean;
+  readonly actionIcon?: FeatherIconName;
   readonly children: ReactNode;
-  readonly onDismiss: () => void;
+  readonly onAction: () => void | Promise<void>;
   readonly onPress: () => void;
 }) {
-  const { styles } = useAppThemeContext();
+  const { styles, theme } = useAppThemeContext();
+  const { width } = useWindowDimensions();
   const translateX = useRef(new Animated.Value(0)).current;
+  const dismissTranslateX = -Math.max(width + 48, 220);
+  const actionOpacity = translateX.interpolate({
+    inputRange: [dismissTranslateX, -52, -14, 0],
+    outputRange: [1, 1, 0.7, 0],
+    extrapolate: "clamp",
+  });
+  const actionScale = translateX.interpolate({
+    inputRange: [dismissTranslateX, -52, -14, 0],
+    outputRange: [1, 1, 0.95, 0.88],
+    extrapolate: "clamp",
+  });
 
   const animateBack = () => {
     Animated.spring(translateX, {
@@ -349,15 +403,25 @@ function SwipeDismissRow({
     }).start();
   };
 
-  const dismiss = () => {
+  const triggerAction = () => {
+    if (actionDisabled) {
+      animateBack();
+      return;
+    }
     Animated.timing(translateX, {
-      toValue: -132,
+      toValue: dismissTranslateX,
       duration: 140,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start(({ finished }) => {
       if (finished) {
-        onDismiss();
+        try {
+          void Promise.resolve(onAction()).catch(() => {
+            animateBack();
+          });
+        } catch {
+          animateBack();
+        }
       }
     });
   };
@@ -366,11 +430,11 @@ function SwipeDismissRow({
     onMoveShouldSetPanResponder: (_, gestureState) =>
       Math.abs(gestureState.dx) > 10 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy),
     onPanResponderMove: (_, gestureState) => {
-      translateX.setValue(Math.min(0, Math.max(gestureState.dx, -132)));
+      translateX.setValue(Math.min(0, Math.max(gestureState.dx, dismissTranslateX)));
     },
     onPanResponderRelease: (_, gestureState) => {
       if (gestureState.dx <= -72) {
-        dismiss();
+        triggerAction();
         return;
       }
       animateBack();
@@ -380,11 +444,31 @@ function SwipeDismissRow({
 
   return (
     <View style={styles.swipeRowShell}>
-      <View style={styles.swipeRowAction}>
-        <Pressable onPress={dismiss} style={styles.swipeRowActionButton}>
-          <Text style={styles.swipeRowActionLabel}>Hide</Text>
+      <Animated.View
+        style={[
+          styles.swipeRowAction,
+          {
+            opacity: actionOpacity,
+          },
+        ]}
+      >
+        <Pressable
+          disabled={actionDisabled}
+          onPress={triggerAction}
+          style={[styles.swipeRowActionButton, actionDisabled && styles.buttonDisabled]}
+        >
+          <Animated.View
+            style={[
+              styles.swipeRowActionIconWrap,
+              {
+                transform: [{ scale: actionScale }],
+              },
+            ]}
+          >
+            <Feather color={theme.danger} name={actionIcon} size={16} />
+          </Animated.View>
         </Pressable>
-      </View>
+      </Animated.View>
       <Animated.View
         style={[
           styles.swipeRowContent,
@@ -411,6 +495,7 @@ function AppShellContent() {
     createThread,
     deleteProject,
     disconnect,
+    deleteThread,
     errorMessage,
     gitCheckout,
     gitCreateBranch,
@@ -464,13 +549,14 @@ function AppShellContent() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
-  const [dismissedRecentThreadIds, setDismissedRecentThreadIds] = useState<string[]>([]);
+  const [hiddenRecentThreadIds, setHiddenRecentThreadIds] = useState<string[]>([]);
   const [threadDrafts, setThreadDrafts] = useState<Record<string, string>>({});
   const [threadTurnPreferences, setThreadTurnPreferences] = useState<
     Record<string, ThreadTurnPreference>
   >({});
   const [revealedMessageId, setRevealedMessageId] = useState<string | null>(null);
   const [projectBuilderOpen, setProjectBuilderOpen] = useState(false);
+  const [projectBuilderRoot, setProjectBuilderRoot] = useState<string | null>(null);
   const [conversationPickerMode, setConversationPickerMode] = useState<ComposerPanelMode | null>(
     null,
   );
@@ -504,7 +590,7 @@ function AppShellContent() {
     visibleProjectIds.has(thread.projectId),
   );
   const recentThreads = allThreads
-    .filter((thread) => !dismissedRecentThreadIds.includes(thread.id))
+    .filter((thread) => !hiddenRecentThreadIds.includes(thread.id))
     .slice(0, 8);
   const selectedThread = allThreads.find((thread) => thread.id === selectedThreadId) ?? null;
   const effectiveProjectId =
@@ -727,6 +813,7 @@ function AppShellContent() {
 
   const openProjectBuilder = () => {
     clearError();
+    setProjectBuilderRoot(serverDirectoryHint.trim() || null);
     setNewFolderName("");
     setProjectTitleDraft("");
     setDirectoryCwd(null);
@@ -737,6 +824,7 @@ function AppShellContent() {
 
   const closeProjectBuilder = () => {
     setProjectBuilderOpen(false);
+    setProjectBuilderRoot(null);
     setNewFolderName("");
   };
 
@@ -854,7 +942,7 @@ function AppShellContent() {
       return;
     }
 
-    const nextRoot = serverDirectoryHint.trim();
+    const nextRoot = projectBuilderRoot?.trim() ?? "";
     if (!nextRoot) {
       return;
     }
@@ -875,7 +963,7 @@ function AppShellContent() {
     return () => {
       cancelled = true;
     };
-  }, [directoryCwd, projectBuilderOpen, searchDirectory, serverDirectoryHint]);
+  }, [directoryCwd, projectBuilderOpen, projectBuilderRoot, searchDirectory]);
 
   useEffect(() => {
     setConversationCapabilities((current) =>
@@ -891,7 +979,7 @@ function AppShellContent() {
   }, [selectedThreadConversationId]);
 
   const handleResetProjectDirectory = async () => {
-    const nextRoot = serverDirectoryHint.trim();
+    const nextRoot = projectBuilderRoot?.trim() ?? "";
     if (!nextRoot) {
       return;
     }
@@ -979,8 +1067,14 @@ function AppShellContent() {
     }
   };
 
-  const handleDismissRecentThread = (threadId: string) => {
-    setDismissedRecentThreadIds((current) =>
+  const handleKillRecentThread = async (threadId: string, isStopped: boolean) => {
+    if (!isStopped) {
+      await stopSession({ threadId });
+    }
+
+    await deleteThread({ threadId });
+
+    setHiddenRecentThreadIds((current) =>
       current.includes(threadId) ? current : [...current, threadId],
     );
   };
@@ -1051,7 +1145,7 @@ function AppShellContent() {
       return;
     }
 
-    if (mode === "reasoning" || mode === "delivery") {
+    if (mode === "reasoning") {
       return;
     }
 
@@ -1080,6 +1174,14 @@ function AppShellContent() {
     updateThreadTurnPreference({ assistantDeliveryMode: mode });
     showToast(mode === "streaming" ? "Delivery: Live" : "Delivery: Queue");
     closeConversationPicker();
+  };
+
+  const handleToggleAssistantDeliveryMode = () => {
+    handleSelectAssistantDeliveryMode(
+      (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") === "streaming"
+        ? "buffered"
+        : "streaming",
+    );
   };
 
   const handleSelectConversationModel = async (model: string) => {
@@ -1274,19 +1376,7 @@ function AppShellContent() {
         </View>
 
         <View style={styles.sidebarActions}>
-          <ActionButton compact label="Index" onPress={handleSelectHome} />
-          <ActionButton
-            compact
-            emphasis="secondary"
-            label={projectBuilderOpen ? "Close Picker" : "Mount Root"}
-            onPress={() => {
-              if (projectBuilderOpen) {
-                closeProjectBuilder();
-                return;
-              }
-              openProjectBuilder();
-            }}
-          />
+          <SidebarNavButton icon="home" label="Home" onPress={handleSelectHome} />
         </View>
 
         <ScrollView
@@ -1294,7 +1384,21 @@ function AppShellContent() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.navSection}>
-            <Text style={styles.navSectionLabel}>Project Tree</Text>
+            <View style={styles.navSectionHeader}>
+              <Text style={styles.navSectionLabel}>Project Tree</Text>
+              <IconButton
+                accessibilityLabel={projectBuilderOpen ? "Close root picker" : "Add root"}
+                disabled={busyAction !== null}
+                icon={projectBuilderOpen ? "x" : "plus"}
+                onPress={() => {
+                  if (projectBuilderOpen) {
+                    closeProjectBuilder();
+                    return;
+                  }
+                  openProjectBuilder();
+                }}
+              />
+            </View>
             {allProjects.length > 0 ? (
               allProjects.map((project) => {
                 const projectThreads = sortThreads(allThreads, project.id);
@@ -1407,16 +1511,6 @@ function AppShellContent() {
             <Text style={styles.sectionTitle}>Recent sessions</Text>
           </View>
           <View style={styles.recentSectionActions}>
-            {dismissedRecentThreadIds.length > 0 ? (
-              <Pressable
-                onPress={() => {
-                  setDismissedRecentThreadIds([]);
-                }}
-                style={styles.inlineSubtleAction}
-              >
-                <Text style={styles.inlineSubtleActionLabel}>Show hidden</Text>
-              </Pressable>
-            ) : null}
             {selectedProject ? (
               <ActionButton
                 compact
@@ -1432,32 +1526,42 @@ function AppShellContent() {
 
         <View style={styles.recentRail}>
           {recentThreads.length > 0 ? (
-            recentThreads.map((thread) => (
-              <SwipeDismissRow
-                key={thread.id}
-                onDismiss={() => {
-                  handleDismissRecentThread(thread.id);
-                }}
-                onPress={() => {
-                  handleSelectThread(thread.projectId, thread.id);
-                }}
-              >
-                <View style={styles.recentRow}>
-                  <View style={styles.recentRowAccent} />
-                  <View style={styles.recentRowCopy}>
-                    <Text numberOfLines={1} style={styles.recentRowTitle}>
-                      {getThreadDisplayTitle(thread)}
-                    </Text>
-                    <Text numberOfLines={1} style={styles.recentRowMeta}>
-                      {allProjects.find((project) => project.id === thread.projectId)?.title ??
-                        "Project"}{" "}
-                      / {thread.session?.status ?? "idle"}
-                    </Text>
+            recentThreads.map((thread) => {
+              const projectTitle =
+                allProjects.find((project) => project.id === thread.projectId)?.title ??
+                "Conversation";
+
+              return (
+                <SwipeDismissRow
+                  actionDisabled={busyAction !== null}
+                  key={thread.id}
+                  onAction={() => {
+                    return handleKillRecentThread(thread.id, thread.session?.status === "stopped");
+                  }}
+                  onPress={() => {
+                    handleSelectThread(thread.projectId, thread.id);
+                  }}
+                >
+                  <View
+                    style={[
+                      styles.recentRow,
+                      recentThreads[recentThreads.length - 1]?.id === thread.id &&
+                        styles.recentRowLast,
+                    ]}
+                  >
+                    <View style={styles.recentRowAccent} />
+                    <View style={styles.recentRowCopy}>
+                      <Text numberOfLines={1} style={styles.recentRowTitle}>
+                        {getRecentThreadDisplayTitle(thread, projectTitle)}
+                      </Text>
+                      <Text numberOfLines={1} style={styles.recentRowMeta}>
+                        {formatTimestamp(thread.updatedAt)} / {thread.session?.status ?? "idle"}
+                      </Text>
+                    </View>
                   </View>
-                  <Text style={styles.recentRowTime}>{formatTimestamp(thread.updatedAt)}</Text>
-                </View>
-              </SwipeDismissRow>
-            ))
+                </SwipeDismissRow>
+              );
+            })
           ) : (
             <Text style={styles.helperText}>No recent sessions in buffer.</Text>
           )}
@@ -1587,17 +1691,13 @@ function AppShellContent() {
               (!selectedThread || !isConnected || busyAction !== null) && styles.buttonDisabled,
             ]}
           >
-            <Text
+            <Feather
               accessibilityElementsHidden
+              color={selectedThread?.runtimeMode === "full-access" ? theme.accent : theme.text}
               importantForAccessibility="no-hide-descendants"
-              style={[
-                styles.composerControlValueIcon,
-                selectedThread?.runtimeMode === "full-access" &&
-                  styles.composerControlValueIconSelected,
-              ]}
-            >
-              {formatRuntimeModeIcon(selectedThread?.runtimeMode ?? "approval-required")}
-            </Text>
+              name={formatRuntimeModeIcon(selectedThread?.runtimeMode ?? "approval-required")}
+              size={14}
+            />
           </Pressable>
           <Pressable
             disabled={
@@ -1618,28 +1718,36 @@ function AppShellContent() {
             </Text>
           </Pressable>
           <Pressable
-            accessibilityLabel={`Reply delivery ${formatAssistantDeliveryModeLabel(
-              selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered",
-            ).toLowerCase()}`}
+            accessibilityLabel={
+              (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") === "streaming"
+                ? "Switch reply delivery to queue"
+                : "Switch reply delivery to live"
+            }
             disabled={!selectedThread || busyAction !== null}
             onPress={() => {
-              void openConversationPicker("delivery");
+              handleToggleAssistantDeliveryMode();
             }}
             style={[
               styles.composerControlButton,
               styles.composerControlButtonIcon,
+              (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") === "streaming" &&
+                styles.composerControlButtonSelected,
               (!selectedThread || busyAction !== null) && styles.buttonDisabled,
             ]}
           >
-            <Text
+            <Feather
               accessibilityElementsHidden
+              color={
+                (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") === "streaming"
+                  ? theme.accent
+                  : theme.text
+              }
               importantForAccessibility="no-hide-descendants"
-              style={styles.composerControlValueIcon}
-            >
-              {formatAssistantDeliveryModeIcon(
+              name={formatAssistantDeliveryModeIcon(
                 selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered",
               )}
-            </Text>
+              size={14}
+            />
           </Pressable>
           <Pressable
             accessibilityLabel="Open git controls"
@@ -1654,13 +1762,13 @@ function AppShellContent() {
                 styles.buttonDisabled,
             ]}
           >
-            <Text
+            <Feather
               accessibilityElementsHidden
+              color={theme.text}
               importantForAccessibility="no-hide-descendants"
-              style={styles.composerControlValueIcon}
-            >
-              ⎇
-            </Text>
+              name="git-branch"
+              size={14}
+            />
           </Pressable>
         </View>
       </View>
@@ -1836,10 +1944,7 @@ function AppShellContent() {
           ? selectedReasoningOptions.map((effort: ProviderReasoningEffort) => ({
               key: effort,
               title: formatReasoningEffortLabel(effort),
-              meta:
-                selectedConversationProvider === "codex"
-                  ? "Controls model reasoning effort for the next turn."
-                  : "Controls Claude thinking effort for the next turn.",
+              meta: null,
               current: effort === selectedThreadTurnPreference?.reasoningEffort,
               available: true,
               reason: null,
@@ -1847,36 +1952,7 @@ function AppShellContent() {
                 handleSelectReasoningEffort(effort);
               },
             }))
-          : conversationPickerMode === "delivery"
-            ? ([
-                {
-                  key: "buffered",
-                  title: "Queue reply",
-                  meta: "Buffer assistant output and reveal it when the turn finishes.",
-                  current:
-                    (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") ===
-                    "buffered",
-                  available: true,
-                  reason: null,
-                  onPress: () => {
-                    handleSelectAssistantDeliveryMode("buffered");
-                  },
-                },
-                {
-                  key: "streaming",
-                  title: "Send immediately",
-                  meta: "Stream assistant deltas into the conversation as they arrive.",
-                  current:
-                    (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") ===
-                    "streaming",
-                  available: true,
-                  reason: null,
-                  onPress: () => {
-                    handleSelectAssistantDeliveryMode("streaming");
-                  },
-                },
-              ] as const)
-            : [];
+          : [];
 
     if (conversationPickerMode === "git") {
       const localBranches = (gitBranches?.branches ?? []).filter((branch) => !branch.isRemote);
@@ -2095,18 +2171,12 @@ function AppShellContent() {
               : "Conversation"}
           </Text>
           <Text style={styles.panelTitle}>
-            {conversationPickerMode === "reasoning"
-              ? "Reasoning effort"
-              : conversationPickerMode === "delivery"
-                ? "Reply delivery"
-                : conversationPickerTitle}
+            {conversationPickerMode === "reasoning" ? "Reasoning effort" : conversationPickerTitle}
           </Text>
           <Text style={styles.panelSubtitle}>
             {conversationPickerMode === "reasoning"
               ? "Pick how much reasoning effort the next turn should use."
-              : conversationPickerMode === "delivery"
-                ? "Choose whether assistant replies should queue or stream immediately."
-                : conversationPickerSubtitle}
+              : conversationPickerSubtitle}
           </Text>
         </View>
 
@@ -2121,9 +2191,7 @@ function AppShellContent() {
                 : "Selected session"}
             </Text>
             <Text style={styles.projectPickerPathValue}>
-              {conversationPickerMode !== "reasoning" &&
-              conversationPickerMode !== "delivery" &&
-              isLoadingConversationCapabilities
+              {conversationPickerMode !== "reasoning" && isLoadingConversationCapabilities
                 ? "Reading the backend capability map for this conversation."
                 : getThreadDisplayTitle(selectedThread)}
             </Text>
@@ -2195,7 +2263,7 @@ function AppShellContent() {
           </Text>
         </View>
 
-        <View style={styles.settingsSection}>
+        <View style={[styles.settingsSection, styles.settingsSectionFirst]}>
           <Text style={styles.sectionEyebrow}>Appearance</Text>
           <View style={styles.themeFieldGroup}>
             <View style={styles.themeField}>
@@ -2378,14 +2446,14 @@ function AppShellContent() {
         <View style={styles.projectPickerPathPanel}>
           <Text style={styles.projectPickerPathLabel}>Current folder</Text>
           <Text style={styles.projectPickerPathValue}>
-            {(directoryCwd ?? serverDirectoryHint) || "Loading server folders..."}
+            {(directoryCwd ?? projectBuilderRoot) || "Loading server folders..."}
           </Text>
         </View>
 
         <View style={styles.inlineButtonRow}>
           <ActionButton
             compact
-            disabled={!serverDirectoryHint.trim() || busyAction !== null}
+            disabled={!projectBuilderRoot?.trim() || busyAction !== null}
             emphasis="secondary"
             label="Server cwd"
             onPress={() => {
@@ -2502,7 +2570,7 @@ function AppShellContent() {
             <View style={styles.shellLayout}>
               <View style={styles.topBar}>
                 {!sidebarPersistent ? (
-                  <IconButton accessibilityLabel="Open tree" icon="☰" onPress={openNavMenu} />
+                  <IconButton accessibilityLabel="Open tree" icon="menu" onPress={openNavMenu} />
                 ) : (
                   <View style={styles.topBarSpacer} />
                 )}
@@ -2516,7 +2584,11 @@ function AppShellContent() {
                   </Text>
                 </View>
 
-                <IconButton accessibilityLabel="Open config" icon="⚙" onPress={openSettingsPanel} />
+                <IconButton
+                  accessibilityLabel="Open config"
+                  icon="settings"
+                  onPress={openSettingsPanel}
+                />
               </View>
 
               {toastMessage ? (
@@ -2529,7 +2601,12 @@ function AppShellContent() {
                 </View>
               ) : null}
 
-              <View style={styles.appFrame}>
+              <View
+                style={[
+                  styles.appFrame,
+                  selectedThread && !sidebarPersistent ? styles.appFrameConversation : null,
+                ]}
+              >
                 {sidebarPersistent ? (
                   <View style={[styles.sidebarFrame, { width: sidebarWidth }]}>
                     {renderSidebar()}
@@ -2540,6 +2617,8 @@ function AppShellContent() {
                   <Animated.View
                     style={[
                       styles.workspaceSurface,
+                      !selectedThread ? styles.workspaceSurfaceHome : null,
+                      selectedThread ? styles.workspaceSurfaceConversation : null,
                       {
                         opacity: workspaceOpacity,
                         transform: [{ translateY: workspaceTranslateY }],
@@ -2638,7 +2717,6 @@ function createStyles(theme: AppTheme) {
   const TERMINAL_MODAL_OVERLAY = theme.modalOverlay;
   const TERMINAL_USER_MESSAGE_BACKGROUND = theme.userMessageBackground;
   const TERMINAL_USER_MESSAGE_BORDER = theme.userMessageBorder;
-  const TERMINAL_ASSISTANT_MESSAGE_BACKGROUND = theme.assistantMessageBackground;
   const TERMINAL_ASSISTANT_MESSAGE_BORDER = theme.assistantMessageBorder;
 
   return StyleSheet.create({
@@ -2662,6 +2740,9 @@ function createStyles(theme: AppTheme) {
       gap: 6,
       padding: 6,
       paddingTop: 4,
+    },
+    appFrameConversation: {
+      padding: 0,
     },
     sidebarFrame: {
       borderColor: TERMINAL_BORDER,
@@ -2697,9 +2778,21 @@ function createStyles(theme: AppTheme) {
     },
     sidebarActions: {
       flexDirection: "row",
-      gap: 8,
+      gap: 4,
       paddingHorizontal: 12,
       paddingTop: 8,
+    },
+    sidebarNavButton: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 8,
+      minHeight: 28,
+    },
+    sidebarNavButtonLabel: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      fontWeight: "700",
     },
     sidebarScrollContent: {
       gap: 12,
@@ -2708,6 +2801,11 @@ function createStyles(theme: AppTheme) {
     },
     navSection: {
       gap: 8,
+    },
+    navSectionHeader: {
+      alignItems: "center",
+      flexDirection: "row",
+      justifyContent: "space-between",
     },
     navSectionLabel: {
       color: TERMINAL_MUTED,
@@ -2985,17 +3083,20 @@ function createStyles(theme: AppTheme) {
       minHeight: 28,
       minWidth: 28,
     },
-    iconButtonLabel: {
-      color: TERMINAL_TEXT,
-      fontSize: 16,
-      lineHeight: 18,
-    },
     workspaceSurface: {
       backgroundColor: TERMINAL_PANEL_ALT,
       borderColor: TERMINAL_BORDER,
       borderWidth: 1,
       flex: 1,
       overflow: "hidden",
+    },
+    workspaceSurfaceHome: {
+      backgroundColor: "transparent",
+      borderWidth: 0,
+    },
+    workspaceSurfaceConversation: {
+      backgroundColor: "transparent",
+      borderWidth: 0,
     },
     toastOverlay: {
       alignItems: "center",
@@ -3021,12 +3122,13 @@ function createStyles(theme: AppTheme) {
       fontWeight: "700",
     },
     workspaceScrollContent: {
-      gap: 10,
-      padding: 10,
-      paddingBottom: 14,
+      gap: 8,
+      paddingHorizontal: 4,
+      paddingTop: 4,
+      paddingBottom: 10,
     },
     recentSection: {
-      gap: 6,
+      gap: 4,
     },
     recentSectionActions: {
       alignItems: "center",
@@ -3034,59 +3136,44 @@ function createStyles(theme: AppTheme) {
       flexWrap: "wrap",
       gap: 8,
     },
-    inlineSubtleAction: {
-      paddingVertical: 6,
-    },
-    inlineSubtleActionLabel: {
-      color: TERMINAL_ACCENT,
-      fontFamily: TERMINAL_FONT_FAMILY,
-      fontSize: 11,
-      fontWeight: "700",
-      textTransform: "uppercase",
-    },
     recentRail: {
-      backgroundColor: TERMINAL_PANEL,
-      borderColor: TERMINAL_BORDER,
-      borderWidth: 1,
       overflow: "hidden",
     },
     swipeRowShell: {
-      backgroundColor: TERMINAL_PANEL,
+      backgroundColor: "transparent",
       minHeight: 44,
       overflow: "hidden",
     },
     swipeRowAction: {
       alignItems: "flex-end",
-      backgroundColor: TERMINAL_PANEL_ALT,
+      backgroundColor: TERMINAL_DANGER_SOFT,
       bottom: 0,
       justifyContent: "center",
-      paddingHorizontal: 12,
+      left: 0,
+      paddingHorizontal: 0,
       position: "absolute",
       right: 0,
       top: 0,
-      width: 132,
     },
     swipeRowActionButton: {
-      alignItems: "center",
-      backgroundColor: TERMINAL_ACCENT_SOFT,
-      borderColor: TERMINAL_ACCENT,
-      borderWidth: 1,
-      minWidth: 84,
-      paddingHorizontal: 10,
-      paddingVertical: 8,
+      alignItems: "flex-end",
+      alignSelf: "stretch",
+      backgroundColor: "transparent",
+      flex: 1,
+      justifyContent: "center",
+      paddingLeft: 12,
+      paddingRight: 16,
     },
-    swipeRowActionLabel: {
-      color: TERMINAL_ACCENT,
-      fontFamily: TERMINAL_FONT_FAMILY,
-      fontSize: 11,
-      fontWeight: "700",
-      textTransform: "uppercase",
+    swipeRowActionIconWrap: {
+      alignItems: "center",
+      justifyContent: "center",
     },
     swipeRowContent: {
-      backgroundColor: TERMINAL_PANEL,
+      backgroundColor: TERMINAL_BG,
     },
     recentRow: {
       alignItems: "center",
+      backgroundColor: TERMINAL_BG,
       borderBottomColor: TERMINAL_BORDER,
       borderBottomWidth: 1,
       flexDirection: "row",
@@ -3094,6 +3181,9 @@ function createStyles(theme: AppTheme) {
       minHeight: 44,
       paddingHorizontal: 9,
       paddingVertical: 7,
+    },
+    recentRowLast: {
+      borderBottomWidth: 0,
     },
     recentRowAccent: {
       alignSelf: "stretch",
@@ -3114,13 +3204,6 @@ function createStyles(theme: AppTheme) {
       color: TERMINAL_MUTED,
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 10,
-    },
-    recentRowTime: {
-      color: TERMINAL_MUTED,
-      fontFamily: TERMINAL_FONT_FAMILY,
-      fontSize: 10,
-      maxWidth: 92,
-      textAlign: "right",
     },
     metricLabel: {
       color: TERMINAL_MUTED,
@@ -3150,20 +3233,19 @@ function createStyles(theme: AppTheme) {
       lineHeight: 18,
     },
     homeGrid: {
-      gap: 10,
+      gap: 8,
     },
     homeGridWide: {
       flexDirection: "row",
       flexWrap: "wrap",
     },
     flatSection: {
-      backgroundColor: TERMINAL_PANEL,
-      borderColor: TERMINAL_BORDER,
-      borderWidth: 1,
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
       flex: 1,
-      gap: 8,
+      gap: 6,
       minWidth: 260,
-      padding: 10,
+      paddingTop: 8,
     },
     sectionHeadingRow: {
       alignItems: "flex-start",
@@ -3283,11 +3365,7 @@ function createStyles(theme: AppTheme) {
       flex: 1,
     },
     threadHeader: {
-      backgroundColor: TERMINAL_PANEL,
-      borderBottomColor: TERMINAL_BORDER,
-      borderBottomWidth: 1,
-      paddingHorizontal: 6,
-      paddingVertical: 5,
+      padding: 0,
     },
     threadHeaderCopy: {
       gap: 4,
@@ -3383,9 +3461,10 @@ function createStyles(theme: AppTheme) {
       flex: 1,
     },
     messagesScrollContent: {
-      gap: 3,
-      padding: 6,
-      paddingBottom: 8,
+      gap: 2,
+      paddingHorizontal: 4,
+      paddingTop: 4,
+      paddingBottom: 6,
     },
     messageWrap: {
       maxWidth: "100%",
@@ -3397,18 +3476,18 @@ function createStyles(theme: AppTheme) {
       alignSelf: "flex-start",
     },
     messageRow: {
-      borderColor: TERMINAL_BORDER,
-      borderWidth: 1,
-      paddingHorizontal: 8,
-      paddingVertical: 6,
+      paddingVertical: 3,
     },
     messageRowUser: {
       backgroundColor: TERMINAL_USER_MESSAGE_BACKGROUND,
       borderColor: TERMINAL_USER_MESSAGE_BORDER,
+      borderWidth: 1,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
     },
     messageRowAssistant: {
-      backgroundColor: TERMINAL_ASSISTANT_MESSAGE_BACKGROUND,
-      borderColor: TERMINAL_ASSISTANT_MESSAGE_BORDER,
+      paddingHorizontal: 0,
+      paddingVertical: 2,
     },
     messageText: {
       fontFamily: TERMINAL_FONT_FAMILY,
@@ -3423,12 +3502,10 @@ function createStyles(theme: AppTheme) {
     },
     messageMetaReveal: {
       alignSelf: "flex-start",
-      backgroundColor: TERMINAL_BG,
-      borderColor: TERMINAL_BORDER,
-      borderWidth: 1,
+      backgroundColor: "transparent",
       marginTop: 3,
-      paddingHorizontal: 7,
-      paddingVertical: 5,
+      paddingHorizontal: 1,
+      paddingVertical: 2,
     },
     messageMetaRevealUser: {
       alignSelf: "flex-end",
@@ -3449,24 +3526,28 @@ function createStyles(theme: AppTheme) {
       paddingVertical: 8,
     },
     composerShell: {
-      backgroundColor: TERMINAL_PANEL,
       borderTopColor: TERMINAL_BORDER,
       borderTopWidth: 1,
-      gap: 4,
-      padding: 6,
+      gap: 3,
+      paddingHorizontal: 4,
+      paddingTop: 4,
+      paddingBottom: 5,
     },
     composerControlStrip: {
+      backgroundColor: TERMINAL_PANEL,
+      borderColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
       flexDirection: "row",
       gap: 4,
+      paddingHorizontal: 3,
+      paddingTop: 1,
+      paddingBottom: 3,
     },
     composerControlButton: {
-      backgroundColor: TERMINAL_BG,
-      borderColor: TERMINAL_BORDER,
-      borderWidth: 1,
       justifyContent: "center",
-      minHeight: 28,
-      paddingHorizontal: 7,
-      paddingVertical: 4,
+      minHeight: 24,
+      paddingHorizontal: 4,
+      paddingVertical: 2,
     },
     composerControlButtonModel: {
       flex: 1,
@@ -3485,6 +3566,7 @@ function createStyles(theme: AppTheme) {
     composerControlButtonSelected: {
       backgroundColor: TERMINAL_ACCENT_SOFT,
       borderColor: TERMINAL_ACCENT,
+      borderWidth: 1,
     },
     composerControlValue: {
       color: TERMINAL_TEXT,
@@ -3493,29 +3575,19 @@ function createStyles(theme: AppTheme) {
       fontWeight: "700",
       textTransform: "uppercase",
     },
-    composerControlValueIcon: {
-      color: TERMINAL_TEXT,
-      fontSize: 14,
-      lineHeight: 16,
-    },
-    composerControlValueIconSelected: {
-      color: TERMINAL_ACCENT,
-    },
     composerInput: {
-      backgroundColor: TERMINAL_BG,
-      borderColor: TERMINAL_BORDER,
-      borderWidth: 1,
+      backgroundColor: "transparent",
       color: TERMINAL_TEXT,
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 12,
-      minHeight: 56,
-      paddingHorizontal: 10,
-      paddingVertical: 7,
+      minHeight: 48,
+      paddingHorizontal: 2,
+      paddingVertical: 4,
     },
     composerFooter: {
       alignItems: "center",
       flexDirection: "row",
-      gap: 6,
+      gap: 4,
       justifyContent: "space-between",
     },
     composerActionCluster: {
@@ -3610,12 +3682,16 @@ function createStyles(theme: AppTheme) {
       flex: 1,
     },
     floatingPanelScrollContent: {
-      gap: 10,
-      padding: 10,
+      gap: 0,
+      paddingHorizontal: 10,
+      paddingTop: 10,
       paddingBottom: 16,
     },
     floatingPanelHeader: {
       gap: 6,
+      paddingBottom: 10,
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
     },
     panelEyebrow: {
       color: TERMINAL_ACCENT,
@@ -3638,11 +3714,15 @@ function createStyles(theme: AppTheme) {
       lineHeight: 16,
     },
     settingsSection: {
-      backgroundColor: TERMINAL_PANEL_ALT,
-      borderColor: TERMINAL_BORDER,
-      borderWidth: 1,
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
       gap: 10,
-      padding: 10,
+      paddingTop: 10,
+      paddingBottom: 10,
+    },
+    settingsSectionFirst: {
+      borderTopWidth: 0,
+      paddingTop: 0,
     },
     themeFieldGroup: {
       gap: 10,
@@ -3675,7 +3755,7 @@ function createStyles(theme: AppTheme) {
       gap: 8,
     },
     themeOptionButton: {
-      backgroundColor: TERMINAL_BG,
+      backgroundColor: "transparent",
       borderColor: TERMINAL_BORDER,
       borderWidth: 1,
       flexBasis: "48%",

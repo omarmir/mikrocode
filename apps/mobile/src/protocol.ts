@@ -85,6 +85,10 @@ export interface StopSessionInput {
   readonly threadId: string;
 }
 
+export interface DeleteThreadInput {
+  readonly threadId: string;
+}
+
 export interface SearchDirectoryInput {
   readonly cwd: string;
 }

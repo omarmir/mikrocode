@@ -24,6 +24,7 @@ import {
   type CreateDirectoryInput,
   type CreateProjectInput,
   type CreateThreadInput,
+  type DeleteThreadInput,
   type DirectoryListing,
   type GetConversationCapabilitiesInput,
   type GitBranchInput,
@@ -622,6 +623,17 @@ export function useBackendConnection() {
     );
   });
 
+  const deleteThread = useStableEvent(async (input: DeleteThreadInput) => {
+    await runBusyCommand("Removing session", () =>
+      dispatchCommand(
+        withCommandMeta({
+          type: "thread.delete",
+          threadId: input.threadId,
+        }),
+      ),
+    );
+  });
+
   const searchDirectory = useStableEvent(
     async (input: SearchDirectoryInput): Promise<DirectoryListing> => {
       const result = await runBusyCommand("Loading directories", () =>
@@ -738,6 +750,7 @@ export function useBackendConnection() {
       getConversationCapabilities(input),
     interruptTurn: (input: InterruptTurnInput) => interruptTurn(input),
     stopSession: (input: StopSessionInput) => stopSession(input),
+    deleteThread: (input: DeleteThreadInput) => deleteThread(input),
     searchDirectory: (input: SearchDirectoryInput) => searchDirectory(input),
     createDirectory: (input: CreateDirectoryInput) => createDirectory(input),
     gitStatus: (input: GitWorkspaceInput) => gitStatus(input),
