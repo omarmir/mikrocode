@@ -3224,6 +3224,7 @@ function createStyles(theme: AppTheme) {
     },
     appFrameConversation: {
       padding: 0,
+      paddingTop: 0,
     },
     sidebarFrame: {
       borderColor: TERMINAL_BORDER,
