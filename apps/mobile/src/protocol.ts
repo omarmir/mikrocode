@@ -12,6 +12,7 @@ import type {
   RuntimeMode,
   ServerConfig,
   ServerConversationCapabilities,
+  UploadChatAttachment,
   WsWelcomePayload,
 } from "@t3tools/contracts";
 
@@ -68,6 +69,7 @@ export interface CreateProjectInput {
 export interface SendTurnInput {
   readonly threadId: string;
   readonly text: string;
+  readonly attachments?: ReadonlyArray<UploadChatAttachment>;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly model: string;
@@ -183,5 +185,17 @@ export function buildDisplayWebSocketUrl(serverUrl: string, authToken: string) {
   } else {
     parsed.searchParams.delete("token");
   }
+  return parsed.toString();
+}
+
+export function buildAttachmentUrl(serverUrl: string, authToken: string, attachmentId: string) {
+  const parsed = normalizeServerUrl(serverUrl);
+  parsed.protocol = parsed.protocol === "wss:" ? "https:" : "http:";
+  if (authToken.trim()) {
+    parsed.searchParams.set("token", authToken.trim());
+  } else {
+    parsed.searchParams.delete("token");
+  }
+  parsed.pathname = `/attachments/${encodeURIComponent(attachmentId)}`;
   return parsed.toString();
 }

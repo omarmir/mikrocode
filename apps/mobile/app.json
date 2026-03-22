@@ -5,6 +5,16 @@
     "scheme": "t3code-mobile",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow T3 Code Mobile to access your photos so you can send images to the model.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ]
+    ],
     "android": {
       "package": "com.anonymous.t3codemobile"
     }

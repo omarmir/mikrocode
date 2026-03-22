@@ -531,7 +531,7 @@ export function useBackendConnection() {
             messageId: createClientId("message"),
             role: "user" as const,
             text: input.text,
-            attachments: [],
+            attachments: [...(input.attachments ?? [])],
           },
           model: input.model,
           ...(input.modelOptions ? { modelOptions: input.modelOptions } : {}),

@@ -1,5 +1,6 @@
 import { StatusBar } from "expo-status-bar";
 import { Feather } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import {
   type ComponentProps,
   createContext,
@@ -13,6 +14,7 @@ import {
 import {
   Animated,
   Easing,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   PanResponder,
@@ -33,6 +35,7 @@ import {
   CLAUDE_CODE_EFFORT_OPTIONS,
   CODEX_REASONING_EFFORT_OPTIONS,
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import type {
   AssistantDeliveryMode,
@@ -50,9 +53,11 @@ import type {
   ProviderReasoningEffort,
   RuntimeMode,
   ServerConversationCapabilities,
+  UploadChatAttachment,
 } from "@t3tools/contracts";
 
 import { MOBILE_DEFAULT_MODEL } from "./defaults";
+import { buildAttachmentUrl, createClientId } from "./protocol";
 import { type ConnectionSettings } from "./storage";
 import {
   FLEXOKI_DARK_ACCENT_OPTIONS,
@@ -77,6 +82,10 @@ type ComposerPanelMode = "model" | "reasoning" | "git";
 type ThreadTurnPreference = {
   readonly reasoningEffort: ProviderReasoningEffort | null;
   readonly assistantDeliveryMode: AssistantDeliveryMode;
+};
+type DraftImageAttachment = UploadChatAttachment & {
+  readonly id: string;
+  readonly previewUri: string;
 };
 type FeatherIconName = ComponentProps<typeof Feather>["name"];
 
@@ -215,6 +224,27 @@ function createThreadTitle(projectTitle: string) {
     minute: "2-digit",
   }).format(new Date());
   return `${projectTitle.trim() || "Conversation"} ${stamp}`.slice(0, 64);
+}
+
+function base64ByteLength(input: string) {
+  const paddingChars = input.endsWith("==") ? 2 : input.endsWith("=") ? 1 : 0;
+  return Math.floor((input.length * 3) / 4) - paddingChars;
+}
+
+function formatByteSize(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function normalizeImageAttachmentName(fileName: string | null | undefined) {
+  const baseName = fileName ? basenameOf(fileName) : "image";
+  const withoutExtension = baseName.replace(/\.[^.]+$/, "").trim() || "image";
+  return `${withoutExtension}.jpg`;
 }
 
 const GENERATED_THREAD_STAMP_PATTERN =
@@ -635,6 +665,9 @@ function AppShellContent() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [hiddenRecentThreadIds, setHiddenRecentThreadIds] = useState<string[]>([]);
   const [threadDrafts, setThreadDrafts] = useState<Record<string, string>>({});
+  const [threadDraftAttachments, setThreadDraftAttachments] = useState<
+    Record<string, DraftImageAttachment[]>
+  >({});
   const [threadTurnPreferences, setThreadTurnPreferences] = useState<
     Record<string, ThreadTurnPreference>
   >({});
@@ -688,6 +721,7 @@ function AppShellContent() {
   const pendingApprovalRequest = findPendingApprovalRequest(selectedThread);
   const selectedThreadDisplayTitle = getThreadDisplayTitle(selectedThread);
   const draft = selectedThread ? (threadDrafts[selectedThread.id] ?? "") : "";
+  const draftAttachments = selectedThread ? (threadDraftAttachments[selectedThread.id] ?? []) : [];
   const isConnected = status === "connected";
   const providers = serverConfig?.providers ?? [];
   const serverDirectoryHint =
@@ -739,6 +773,11 @@ function AppShellContent() {
     conversationPickerMode === "model"
       ? formatModelSwitchBehavior(conversationCapabilities?.modelSwitch ?? null)
       : "";
+  const canSend =
+    selectedThread !== null &&
+    isConnected &&
+    busyAction === null &&
+    (draft.trim().length > 0 || draftAttachments.length > 0);
 
   useEffect(() => {
     if (sidebarPersistent) {
@@ -1021,6 +1060,84 @@ function AppShellContent() {
     }
 
     setThreadDrafts((current) => ({ ...current, [selectedThread.id]: value }));
+  };
+
+  const updateDraftAttachments = (
+    updater: (currentAttachments: DraftImageAttachment[]) => DraftImageAttachment[],
+  ) => {
+    clearError();
+    if (!selectedThread) {
+      return;
+    }
+
+    setThreadDraftAttachments((current) => ({
+      ...current,
+      [selectedThread.id]: updater(current[selectedThread.id] ?? []),
+    }));
+  };
+
+  const buildDraftImageAttachment = (asset: ImagePicker.ImagePickerAsset) => {
+    if (!asset.base64) {
+      return null;
+    }
+
+    const sizeBytes = base64ByteLength(asset.base64);
+    if (sizeBytes <= 0 || sizeBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+      return null;
+    }
+
+    return {
+      id: createClientId("attachment"),
+      type: "image" as const,
+      name: normalizeImageAttachmentName(asset.fileName),
+      mimeType: "image/jpeg",
+      sizeBytes,
+      dataUrl: `data:image/jpeg;base64,${asset.base64}`,
+      previewUri: asset.uri,
+    } satisfies DraftImageAttachment;
+  };
+
+  const handlePickImageAttachment = async () => {
+    if (!selectedThread || busyAction !== null) {
+      return;
+    }
+
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      showToast("Photos access is required");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      allowsEditing: false,
+      allowsMultipleSelection: false,
+      base64: true,
+      mediaTypes: ["images"],
+      quality: 1,
+    });
+    if (result.canceled) {
+      return;
+    }
+
+    const nextAttachments = result.assets
+      .map((asset) => buildDraftImageAttachment(asset))
+      .filter((asset): asset is DraftImageAttachment => asset !== null);
+
+    if (nextAttachments.length === 0) {
+      showToast(`Image must be under ${formatByteSize(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)}`);
+      return;
+    }
+
+    updateDraftAttachments((current) => [...current, ...nextAttachments]);
+    showToast(
+      nextAttachments.length === 1 ? "Image attached" : `${nextAttachments.length} images attached`,
+    );
+  };
+
+  const handleRemoveDraftAttachment = (attachmentId: string) => {
+    updateDraftAttachments((current) =>
+      current.filter((attachment) => attachment.id !== attachmentId),
+    );
   };
 
   const updateThreadTurnPreference = (patch: Partial<ThreadTurnPreference>) => {
@@ -1440,13 +1557,20 @@ function AppShellContent() {
 
   const handleSend = async () => {
     const trimmed = draft.trim();
-    if (!trimmed || !selectedThread) {
+    if ((!trimmed && draftAttachments.length === 0) || !selectedThread) {
       return;
     }
 
     await sendTurn({
       threadId: selectedThread.id,
       text: trimmed,
+      attachments: draftAttachments.map((attachment) => ({
+        type: attachment.type,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.sizeBytes,
+        dataUrl: attachment.dataUrl,
+      })),
       runtimeMode: selectedThread.runtimeMode,
       interactionMode: selectedThread.interactionMode,
       model: selectedThread.model,
@@ -1470,6 +1594,19 @@ function AppShellContent() {
     });
 
     setThreadDrafts((current) => ({ ...current, [selectedThread.id]: "" }));
+    setThreadDraftAttachments((current) => ({ ...current, [selectedThread.id]: [] }));
+  };
+
+  const resolveAttachmentImageUrl = (attachmentId: string) => {
+    try {
+      return buildAttachmentUrl(
+        connectionSettings.serverUrl,
+        connectionSettings.authToken,
+        attachmentId,
+      );
+    } catch {
+      return null;
+    }
   };
 
   const handleRespondToPendingApproval = async (decision: ProviderApprovalDecision) => {
@@ -1945,53 +2082,93 @@ function AppShellContent() {
         style={styles.messagesScroll}
       >
         {messages.length > 0 ? (
-          messages.map((message) => (
-            <Pressable
-              key={message.id}
-              onPress={() => {
-                handleRevealMessageMeta(message.id);
-              }}
-              style={[
-                styles.messageWrap,
-                message.role === "user" ? styles.messageWrapUser : styles.messageWrapAssistant,
-              ]}
-            >
-              <View
+          messages.map((message) => {
+            const hasMessageText = message.text.length > 0;
+            const messageAttachmentPreviews = (message.attachments ?? [])
+              .filter((attachment) => attachment.type === "image")
+              .map((attachment) => ({
+                id: attachment.id,
+                name: attachment.name,
+                uri: resolveAttachmentImageUrl(attachment.id),
+              }))
+              .filter(
+                (
+                  attachment,
+                ): attachment is {
+                  readonly id: string;
+                  readonly name: string;
+                  readonly uri: string;
+                } => attachment.uri !== null,
+              );
+
+            return (
+              <Pressable
+                key={message.id}
+                onPress={() => {
+                  handleRevealMessageMeta(message.id);
+                }}
                 style={[
-                  styles.messageRow,
-                  message.role === "user" ? styles.messageRowUser : styles.messageRowAssistant,
-                  message.role === "assistant" &&
-                    message.id === highlightedAssistantMessageId &&
-                    styles.messageRowAssistantLatest,
+                  styles.messageWrap,
+                  message.role === "user" ? styles.messageWrapUser : styles.messageWrapAssistant,
                 ]}
               >
-                <Text
+                <View
                   style={[
-                    styles.messageText,
-                    message.role === "user" ? styles.messageTextUser : styles.messageTextAssistant,
+                    styles.messageRow,
+                    message.role === "user" ? styles.messageRowUser : styles.messageRowAssistant,
+                    message.role === "assistant" &&
+                      message.id === highlightedAssistantMessageId &&
+                      styles.messageRowAssistantLatest,
                   ]}
                 >
-                  {message.text || "Streaming..."}
-                </Text>
-              </View>
-              {revealedMessageId === message.id ? (
-                <Animated.View
-                  style={[
-                    styles.messageMetaReveal,
-                    { opacity: messageMetaOpacity },
-                    message.role === "user"
-                      ? styles.messageMetaRevealUser
-                      : styles.messageMetaRevealAssistant,
-                  ]}
-                >
-                  <Text style={styles.messageMetaRevealText}>
-                    {formatTimestamp(message.updatedAt)}
-                    {message.streaming ? " / streaming" : ""}
-                  </Text>
-                </Animated.View>
-              ) : null}
-            </Pressable>
-          ))
+                  <View style={styles.messageBody}>
+                    {hasMessageText || message.streaming ? (
+                      <Text
+                        style={[
+                          styles.messageText,
+                          message.role === "user"
+                            ? styles.messageTextUser
+                            : styles.messageTextAssistant,
+                        ]}
+                      >
+                        {hasMessageText ? message.text : "Streaming..."}
+                      </Text>
+                    ) : null}
+
+                    {messageAttachmentPreviews.length > 0 ? (
+                      <View style={styles.messageAttachmentRow}>
+                        {messageAttachmentPreviews.map((attachment) => (
+                          <View key={attachment.id} style={styles.messageAttachmentTile}>
+                            <Image
+                              resizeMode="cover"
+                              source={{ uri: attachment.uri }}
+                              style={styles.messageAttachmentImage}
+                            />
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
+                  </View>
+                </View>
+                {revealedMessageId === message.id ? (
+                  <Animated.View
+                    style={[
+                      styles.messageMetaReveal,
+                      { opacity: messageMetaOpacity },
+                      message.role === "user"
+                        ? styles.messageMetaRevealUser
+                        : styles.messageMetaRevealAssistant,
+                    ]}
+                  >
+                    <Text style={styles.messageMetaRevealText}>
+                      {formatTimestamp(message.updatedAt)}
+                      {message.streaming ? " / streaming" : ""}
+                    </Text>
+                  </Animated.View>
+                ) : null}
+              </Pressable>
+            );
+          })
         ) : (
           <View style={styles.emptyConversation}>
             <Text style={styles.sectionTitle}>No output yet</Text>
@@ -2073,6 +2250,49 @@ function AppShellContent() {
           </View>
         ) : null}
 
+        {draftAttachments.length > 0 ? (
+          <ScrollView
+            horizontal
+            contentContainerStyle={styles.composerAttachmentStripContent}
+            keyboardShouldPersistTaps="handled"
+            showsHorizontalScrollIndicator={false}
+            style={styles.composerAttachmentStrip}
+          >
+            {draftAttachments.map((attachment) => (
+              <View key={attachment.id} style={styles.composerAttachmentCard}>
+                <Image
+                  resizeMode="cover"
+                  source={{ uri: attachment.previewUri }}
+                  style={styles.composerAttachmentImage}
+                />
+                <Pressable
+                  accessibilityLabel={`Remove ${attachment.name}`}
+                  onPress={() => {
+                    handleRemoveDraftAttachment(attachment.id);
+                  }}
+                  style={styles.composerAttachmentRemove}
+                >
+                  <Feather
+                    accessibilityElementsHidden
+                    color={theme.text}
+                    importantForAccessibility="no-hide-descendants"
+                    name="x"
+                    size={12}
+                  />
+                </Pressable>
+                <View style={styles.composerAttachmentMeta}>
+                  <Text numberOfLines={1} style={styles.composerAttachmentName}>
+                    {attachment.name}
+                  </Text>
+                  <Text style={styles.composerAttachmentSize}>
+                    {formatByteSize(attachment.sizeBytes)}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+        ) : null}
+
         <TextInput
           multiline
           onChangeText={updateDraft}
@@ -2088,6 +2308,35 @@ function AppShellContent() {
 
         <View style={styles.composerFooter}>
           <View style={styles.composerActionCluster}>
+            <Pressable
+              disabled={!selectedThread || busyAction !== null}
+              onPress={() => {
+                void handlePickImageAttachment();
+              }}
+              style={[
+                styles.composerUtilityButton,
+                draftAttachments.length > 0 && styles.composerUtilityButtonSelected,
+                (!selectedThread || busyAction !== null) && styles.buttonDisabled,
+              ]}
+            >
+              <Feather
+                accessibilityElementsHidden
+                color={draftAttachments.length > 0 ? theme.accent : theme.text}
+                importantForAccessibility="no-hide-descendants"
+                name="image"
+                size={13}
+              />
+              <Text
+                style={[
+                  styles.composerUtilityLabel,
+                  draftAttachments.length > 0 && styles.composerUtilityLabelSelected,
+                ]}
+              >
+                {draftAttachments.length > 0
+                  ? `${draftAttachments.length} image${draftAttachments.length === 1 ? "" : "s"}`
+                  : "Image"}
+              </Text>
+            </Pressable>
             <ActionButton
               compact
               disabled={!canInterrupt || busyAction !== null}
@@ -2118,7 +2367,7 @@ function AppShellContent() {
           </View>
           <View style={styles.composerRunAction}>
             <ActionButton
-              disabled={!selectedThread || !draft.trim() || !isConnected || busyAction !== null}
+              disabled={!canSend}
               label={
                 (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") === "streaming"
                   ? "Send"
@@ -3767,6 +4016,9 @@ function createStyles(theme: AppTheme) {
       paddingHorizontal: 8,
       paddingVertical: 6,
     },
+    messageBody: {
+      gap: 6,
+    },
     messageText: {
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 12,
@@ -3777,6 +4029,19 @@ function createStyles(theme: AppTheme) {
     },
     messageTextAssistant: {
       color: TERMINAL_TEXT,
+    },
+    messageAttachmentRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 6,
+    },
+    messageAttachmentTile: {
+      backgroundColor: TERMINAL_PANEL_ALT,
+      overflow: "hidden",
+    },
+    messageAttachmentImage: {
+      height: 112,
+      width: 112,
     },
     messageMetaReveal: {
       alignSelf: "flex-start",
@@ -3856,6 +4121,50 @@ function createStyles(theme: AppTheme) {
       paddingTop: 4,
       paddingBottom: 5,
     },
+    composerAttachmentStrip: {
+      maxHeight: 102,
+    },
+    composerAttachmentStripContent: {
+      gap: 8,
+      paddingBottom: 2,
+    },
+    composerAttachmentCard: {
+      backgroundColor: TERMINAL_PANEL_ALT,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      gap: 4,
+      padding: 4,
+      width: 96,
+    },
+    composerAttachmentImage: {
+      backgroundColor: TERMINAL_BG,
+      height: 60,
+      width: "100%",
+    },
+    composerAttachmentRemove: {
+      alignItems: "center",
+      backgroundColor: TERMINAL_PANEL,
+      height: 18,
+      justifyContent: "center",
+      position: "absolute",
+      right: 6,
+      top: 6,
+      width: 18,
+    },
+    composerAttachmentMeta: {
+      gap: 1,
+    },
+    composerAttachmentName: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+    },
+    composerAttachmentSize: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 9,
+    },
     composerControlStrip: {
       backgroundColor: TERMINAL_PANEL,
       borderColor: TERMINAL_BORDER,
@@ -3917,6 +4226,32 @@ function createStyles(theme: AppTheme) {
       flexDirection: "row",
       flexWrap: "wrap",
       gap: 4,
+    },
+    composerUtilityButton: {
+      alignItems: "center",
+      backgroundColor: TERMINAL_BG,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      flexDirection: "row",
+      gap: 6,
+      minHeight: 28,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+    },
+    composerUtilityButtonSelected: {
+      backgroundColor: TERMINAL_ACCENT_SOFT,
+      borderColor: TERMINAL_ACCENT,
+    },
+    composerUtilityLabel: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      letterSpacing: 0.3,
+      textTransform: "uppercase",
+    },
+    composerUtilityLabelSelected: {
+      color: TERMINAL_ACCENT,
     },
     composerRunAction: {
       minWidth: 102,
