@@ -1,5 +1,13 @@
 import { StatusBar } from "expo-status-bar";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Animated,
   Easing,
@@ -17,7 +25,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
   CLAUDE_CODE_EFFORT_OPTIONS,
@@ -42,6 +50,14 @@ import type {
 
 import { MOBILE_DEFAULT_MODEL } from "./defaults";
 import { type ConnectionSettings } from "./storage";
+import {
+  FLEXOKI_DARK_ACCENT_OPTIONS,
+  FLEXOKI_DARK_NEUTRAL_OPTIONS,
+  resolveAppTheme,
+  type AppTheme,
+  type AppThemeAccent,
+  type AppThemeNeutral,
+} from "./theme";
 import { useBackendConnection } from "./useBackendConnection";
 
 const FALLBACK_MODEL = MOBILE_DEFAULT_MODEL;
@@ -53,15 +69,7 @@ const TERMINAL_FONT_FAMILY = Platform.select({
   android: "monospace",
   default: "monospace",
 });
-const TERMINAL_BG = "#050816";
-const TERMINAL_PANEL = "#0a1020";
-const TERMINAL_PANEL_ALT = "#0d1528";
-const TERMINAL_BORDER = "#18243c";
-const TERMINAL_TEXT = "#d8e6ff";
-const TERMINAL_MUTED = "#7f8ca8";
-const TERMINAL_ACCENT = "#7ef5b8";
-const TERMINAL_ACCENT_SOFT = "#133126";
-type ComposerPanelMode = "model" | "access" | "reasoning" | "delivery" | "git";
+type ComposerPanelMode = "model" | "reasoning" | "delivery" | "git";
 type ThreadTurnPreference = {
   readonly reasoningEffort: ProviderReasoningEffort | null;
   readonly assistantDeliveryMode: AssistantDeliveryMode;
@@ -99,16 +107,34 @@ function formatConnectionLabel(status: string) {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-function formatRuntimeModeLabel(mode: RuntimeMode) {
-  return mode === "full-access" ? "Full access" : "Approval required";
-}
-
 function formatReasoningEffortLabel(effort: ProviderReasoningEffort | null) {
   return effort ? effort.toUpperCase() : "AUTO";
 }
 
 function formatAssistantDeliveryModeLabel(mode: AssistantDeliveryMode) {
   return mode === "streaming" ? "LIVE" : "QUEUE";
+}
+
+function formatRuntimeModeIcon(mode: RuntimeMode) {
+  return mode === "full-access" ? "🔓" : "🔒";
+}
+
+function formatAssistantDeliveryModeIcon(mode: AssistantDeliveryMode) {
+  return mode === "streaming" ? "»" : "≡";
+}
+
+function getThemeNeutralLabel(base: AppThemeNeutral) {
+  return (
+    FLEXOKI_DARK_NEUTRAL_OPTIONS.find((option) => option.id === base)?.label ??
+    FLEXOKI_DARK_NEUTRAL_OPTIONS[0].label
+  );
+}
+
+function getThemeAccentLabel(accent: AppThemeAccent) {
+  return (
+    FLEXOKI_DARK_ACCENT_OPTIONS.find((option) => option.id === accent)?.label ??
+    FLEXOKI_DARK_ACCENT_OPTIONS[0].label
+  );
 }
 
 function formatGitBranchLabel(branch: string | null | undefined) {
@@ -222,6 +248,7 @@ function ActionButton({
   readonly label: string;
   readonly onPress: () => void;
 }) {
+  const { styles } = useAppThemeContext();
   return (
     <Pressable
       disabled={disabled}
@@ -250,6 +277,36 @@ function ActionButton({
   );
 }
 
+function IconButton({
+  accessibilityLabel,
+  disabled = false,
+  icon,
+  onPress,
+}: {
+  readonly accessibilityLabel: string;
+  readonly disabled?: boolean;
+  readonly icon: string;
+  readonly onPress: () => void;
+}) {
+  const { styles } = useAppThemeContext();
+  return (
+    <Pressable
+      accessibilityLabel={accessibilityLabel}
+      disabled={disabled}
+      onPress={onPress}
+      style={[styles.iconButton, disabled && styles.buttonDisabled]}
+    >
+      <Text
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={styles.iconButtonLabel}
+      >
+        {icon}
+      </Text>
+    </Pressable>
+  );
+}
+
 function MetaRow({
   accent = false,
   label,
@@ -259,6 +316,7 @@ function MetaRow({
   readonly label: string;
   readonly value: string;
 }) {
+  const { styles } = useAppThemeContext();
   return (
     <View style={styles.metaRow}>
       <Text style={styles.metaLabel}>{label}</Text>
@@ -278,6 +336,7 @@ function SwipeDismissRow({
   readonly onDismiss: () => void;
   readonly onPress: () => void;
 }) {
+  const { styles } = useAppThemeContext();
   const translateX = useRef(new Animated.Value(0)).current;
 
   const animateBack = () => {
@@ -341,7 +400,7 @@ function SwipeDismissRow({
   );
 }
 
-export function AppShell() {
+function AppShellContent() {
   const {
     busyAction,
     clearError,
@@ -378,6 +437,16 @@ export function AppShell() {
     updateThreadRuntimeMode,
     welcome,
   } = useBackendConnection();
+  const theme = resolveAppTheme({
+    neutralBase: connectionSettings.themeBase,
+    accent: connectionSettings.themeAccent,
+  });
+  const styles = getStyles(theme);
+  const themeContextValue = useMemo(() => ({ styles, theme }), [styles, theme]);
+  const TERMINAL_BORDER = theme.border;
+  const TERMINAL_MUTED = theme.muted;
+  const TERMINAL_ACCENT = theme.accent;
+  const TERMINAL_ACCENT_SOFT = theme.accentSoft;
   const insets = useSafeAreaInsets();
 
   const { height, width } = useWindowDimensions();
@@ -389,6 +458,7 @@ export function AppShell() {
   const conversationPickerHeight = Math.min(540, Math.max(320, height - 40));
   const projectPickerWidth = Math.min(720, Math.max(320, width - 24));
   const projectPickerHeight = Math.min(640, Math.max(420, height - 24));
+  const [androidKeyboardInset, setAndroidKeyboardInset] = useState(0);
 
   const [navMenuOpen, setNavMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -417,6 +487,7 @@ export function AppShell() {
   const [isLoadingGitState, setIsLoadingGitState] = useState(false);
   const [gitCommitMessageDraft, setGitCommitMessageDraft] = useState("");
   const [gitBranchNameDraft, setGitBranchNameDraft] = useState("");
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const navTranslateX = useRef(new Animated.Value(-sidebarWidth)).current;
   const settingsTranslateX = useRef(new Animated.Value(floatingPanelWidth)).current;
@@ -424,6 +495,7 @@ export function AppShell() {
   const workspaceTranslateY = useRef(new Animated.Value(0)).current;
   const messageMetaOpacity = useRef(new Animated.Value(0)).current;
   const messageMetaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesScrollRef = useRef<ScrollView | null>(null);
 
   const allProjects = sortProjects(snapshot?.projects ?? []);
@@ -448,17 +520,9 @@ export function AppShell() {
     serverConfig?.cwd ?? welcome?.cwd ?? selectedProject?.workspaceRoot ?? "";
   const selectedThreadConversationId = selectedThread?.id ?? null;
   const selectedConversationProvider = resolveProviderForThread(selectedThread);
-  const selectedConversationProviderStatus =
-    selectedConversationProvider === null
-      ? null
-      : (providers.find((provider) => provider.provider === selectedConversationProvider) ?? null);
   const currentModelOptions =
     selectedThread && conversationCapabilities?.threadId === selectedThread.id
       ? conversationCapabilities.models
-      : [];
-  const currentRuntimeModeOptions =
-    selectedThread && conversationCapabilities?.threadId === selectedThread.id
-      ? conversationCapabilities.runtimeModes
       : [];
   const selectedWorkspaceRoot =
     selectedThread?.worktreePath ?? selectedProject?.workspaceRoot ?? null;
@@ -496,20 +560,11 @@ export function AppShell() {
   const topBarSecondary = selectedThread
     ? `${selectedConversationProvider ? formatProviderLabel(selectedConversationProvider) : "Provider"}${selectedThreadDisplayTitle !== "Conversation" ? ` / ${selectedThreadDisplayTitle}` : ""}`
     : homeSubtitle;
-  const conversationPickerTitle =
-    conversationPickerMode === "model"
-      ? "Switch model"
-      : conversationPickerMode === "access"
-        ? "Switch permission"
-        : "";
+  const conversationPickerTitle = conversationPickerMode === "model" ? "Switch model" : "";
   const conversationPickerSubtitle =
     conversationPickerMode === "model"
       ? formatModelSwitchBehavior(conversationCapabilities?.modelSwitch ?? null)
-      : conversationPickerMode === "access"
-        ? selectedThread?.session && selectedThread.session.status !== "stopped"
-          ? "Changing access restarts the active provider session immediately."
-          : "Access mode applies to the next session start."
-        : "";
+      : "";
 
   useEffect(() => {
     if (sidebarPersistent) {
@@ -517,6 +572,14 @@ export function AppShell() {
       navTranslateX.setValue(-sidebarWidth);
     }
   }, [navTranslateX, sidebarPersistent, sidebarWidth]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!navMenuOpen) {
@@ -593,6 +656,24 @@ export function AppShell() {
 
     requestAnimationFrame(scrollConversationToEnd);
   }, [messages.length, selectedThreadConversationId]);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") {
+      return;
+    }
+
+    const showSubscription = Keyboard.addListener("keyboardDidShow", (event) => {
+      setAndroidKeyboardInset(Math.max(0, event.endCoordinates.height - insets.bottom));
+    });
+    const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
+      setAndroidKeyboardInset(0);
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [insets.bottom]);
 
   const animatePanel = (
     animatedValue: Animated.Value,
@@ -701,6 +782,22 @@ export function AppShell() {
   const updateConnectionSettings = (patch: Partial<ConnectionSettings>) => {
     clearError();
     setConnectionSettings((current) => ({ ...current, ...patch }));
+  };
+
+  const handleSelectThemeBase = (themeBase: AppThemeNeutral) => {
+    if (connectionSettings.themeBase === themeBase) {
+      return;
+    }
+    updateConnectionSettings({ themeBase });
+    showToast(`Base: ${getThemeNeutralLabel(themeBase)}`);
+  };
+
+  const handleSelectThemeAccent = (themeAccent: AppThemeAccent) => {
+    if (connectionSettings.themeAccent === themeAccent) {
+      return;
+    }
+    updateConnectionSettings({ themeAccent });
+    showToast(`Accent: ${getThemeAccentLabel(themeAccent)}`);
   };
 
   const updateDraft = (value: string) => {
@@ -924,6 +1021,18 @@ export function AppShell() {
     }, 1200);
   };
 
+  const showToast = (message: string) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToastMessage(message);
+    toastTimerRef.current = setTimeout(() => {
+      setToastMessage(null);
+      toastTimerRef.current = null;
+    }, 1800);
+  };
+
   const closeConversationPicker = () => {
     setConversationPickerMode(null);
   };
@@ -963,11 +1072,13 @@ export function AppShell() {
 
   const handleSelectReasoningEffort = (effort: ProviderReasoningEffort | null) => {
     updateThreadTurnPreference({ reasoningEffort: effort });
+    showToast(`Effort: ${formatReasoningEffortLabel(effort)}`);
     closeConversationPicker();
   };
 
   const handleSelectAssistantDeliveryMode = (mode: AssistantDeliveryMode) => {
     updateThreadTurnPreference({ assistantDeliveryMode: mode });
+    showToast(mode === "streaming" ? "Delivery: Live" : "Delivery: Queue");
     closeConversationPicker();
   };
 
@@ -985,6 +1096,7 @@ export function AppShell() {
       model,
     });
     setConversationCapabilities(null);
+    showToast(`Model: ${model}`);
     closeConversationPicker();
   };
 
@@ -1002,7 +1114,19 @@ export function AppShell() {
       runtimeMode,
     });
     setConversationCapabilities(null);
+    showToast(
+      runtimeMode === "approval-required" ? "Permissions: Ask first" : "Permissions: Full access",
+    );
     closeConversationPicker();
+  };
+
+  const handleToggleConversationRuntimeMode = async () => {
+    if (!selectedThread) {
+      return;
+    }
+    await handleSelectConversationRuntimeMode(
+      selectedThread.runtimeMode === "approval-required" ? "full-access" : "approval-required",
+    );
   };
 
   const handleRefreshGitState = async () => {
@@ -1420,6 +1544,127 @@ export function AppShell() {
         </View>
       ) : null}
 
+      <View style={styles.threadHeader}>
+        <View style={styles.composerControlStrip}>
+          <Pressable
+            disabled={
+              !selectedThread ||
+              !isConnected ||
+              busyAction !== null ||
+              isLoadingConversationCapabilities
+            }
+            onPress={() => {
+              void openConversationPicker("model");
+            }}
+            style={[
+              styles.composerControlButton,
+              styles.composerControlButtonModel,
+              (!selectedThread ||
+                !isConnected ||
+                busyAction !== null ||
+                isLoadingConversationCapabilities) &&
+                styles.buttonDisabled,
+            ]}
+          >
+            <Text numberOfLines={1} style={styles.composerControlValue}>
+              {selectedThread?.model ?? FALLBACK_MODEL}
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityLabel={
+              selectedThread?.runtimeMode === "approval-required"
+                ? "Enable full access permissions"
+                : "Require approval for permissions"
+            }
+            disabled={!selectedThread || !isConnected || busyAction !== null}
+            onPress={() => {
+              void handleToggleConversationRuntimeMode();
+            }}
+            style={[
+              styles.composerControlButton,
+              styles.composerControlButtonIcon,
+              selectedThread?.runtimeMode === "full-access" && styles.composerControlButtonSelected,
+              (!selectedThread || !isConnected || busyAction !== null) && styles.buttonDisabled,
+            ]}
+          >
+            <Text
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              style={[
+                styles.composerControlValueIcon,
+                selectedThread?.runtimeMode === "full-access" &&
+                  styles.composerControlValueIconSelected,
+              ]}
+            >
+              {formatRuntimeModeIcon(selectedThread?.runtimeMode ?? "approval-required")}
+            </Text>
+          </Pressable>
+          <Pressable
+            disabled={
+              !selectedThread || busyAction !== null || selectedReasoningOptions.length === 0
+            }
+            onPress={() => {
+              void openConversationPicker("reasoning");
+            }}
+            style={[
+              styles.composerControlButton,
+              styles.composerControlButtonEffort,
+              (!selectedThread || busyAction !== null || selectedReasoningOptions.length === 0) &&
+                styles.buttonDisabled,
+            ]}
+          >
+            <Text numberOfLines={1} style={styles.composerControlValue}>
+              {formatReasoningEffortLabel(selectedThreadTurnPreference?.reasoningEffort ?? null)}
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityLabel={`Reply delivery ${formatAssistantDeliveryModeLabel(
+              selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered",
+            ).toLowerCase()}`}
+            disabled={!selectedThread || busyAction !== null}
+            onPress={() => {
+              void openConversationPicker("delivery");
+            }}
+            style={[
+              styles.composerControlButton,
+              styles.composerControlButtonIcon,
+              (!selectedThread || busyAction !== null) && styles.buttonDisabled,
+            ]}
+          >
+            <Text
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              style={styles.composerControlValueIcon}
+            >
+              {formatAssistantDeliveryModeIcon(
+                selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered",
+              )}
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityLabel="Open git controls"
+            disabled={!selectedThread || !selectedWorkspaceRoot || busyAction !== null}
+            onPress={() => {
+              void openConversationPicker("git");
+            }}
+            style={[
+              styles.composerControlButton,
+              styles.composerControlButtonIcon,
+              (!selectedThread || !selectedWorkspaceRoot || busyAction !== null) &&
+                styles.buttonDisabled,
+            ]}
+          >
+            <Text
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              style={styles.composerControlValueIcon}
+            >
+              ⎇
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+
       <ScrollView
         ref={messagesScrollRef}
         contentContainerStyle={styles.messagesScrollContent}
@@ -1490,120 +1735,14 @@ export function AppShell() {
         )}
       </ScrollView>
 
-      <View style={styles.composerShell}>
-        <View style={styles.composerControlStrip}>
-          <Pressable
-            disabled={
-              !selectedThread ||
-              !isConnected ||
-              busyAction !== null ||
-              isLoadingConversationCapabilities
-            }
-            onPress={() => {
-              void openConversationPicker("model");
-            }}
-            style={[
-              styles.composerControlButton,
-              (!selectedThread ||
-                !isConnected ||
-                busyAction !== null ||
-                isLoadingConversationCapabilities) &&
-                styles.buttonDisabled,
-            ]}
-          >
-            <Text numberOfLines={1} style={styles.composerControlValue}>
-              {selectedThread?.model ?? FALLBACK_MODEL}
-            </Text>
-          </Pressable>
-          <Pressable
-            disabled={
-              !selectedThread ||
-              !isConnected ||
-              busyAction !== null ||
-              isLoadingConversationCapabilities
-            }
-            onPress={() => {
-              void openConversationPicker("access");
-            }}
-            style={[
-              styles.composerControlButton,
-              styles.composerControlButtonAccess,
-              (!selectedThread ||
-                !isConnected ||
-                busyAction !== null ||
-                isLoadingConversationCapabilities) &&
-                styles.buttonDisabled,
-            ]}
-          >
-            <Text numberOfLines={1} style={styles.composerControlValue}>
-              {selectedThread?.runtimeMode === "approval-required" ? "ASK" : "FULL"}
-            </Text>
-          </Pressable>
-          <Pressable
-            disabled={
-              !selectedThread || busyAction !== null || selectedReasoningOptions.length === 0
-            }
-            onPress={() => {
-              void openConversationPicker("reasoning");
-            }}
-            style={[
-              styles.composerControlButton,
-              styles.composerControlButtonCompact,
-              (!selectedThread || busyAction !== null || selectedReasoningOptions.length === 0) &&
-                styles.buttonDisabled,
-            ]}
-          >
-            <Text numberOfLines={1} style={styles.composerControlValue}>
-              {formatReasoningEffortLabel(selectedThreadTurnPreference?.reasoningEffort ?? null)}
-            </Text>
-          </Pressable>
-          <Pressable
-            disabled={!selectedThread || busyAction !== null}
-            onPress={() => {
-              void openConversationPicker("delivery");
-            }}
-            style={[
-              styles.composerControlButton,
-              styles.composerControlButtonCompact,
-              (!selectedThread || busyAction !== null) && styles.buttonDisabled,
-            ]}
-          >
-            <Text numberOfLines={1} style={styles.composerControlValue}>
-              {formatAssistantDeliveryModeLabel(
-                selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered",
-              )}
-            </Text>
-          </Pressable>
-          <Pressable
-            disabled={!selectedThread || !selectedWorkspaceRoot || busyAction !== null}
-            onPress={() => {
-              void openConversationPicker("git");
-            }}
-            style={[
-              styles.composerControlButton,
-              styles.composerControlButtonCompact,
-              (!selectedThread || !selectedWorkspaceRoot || busyAction !== null) &&
-                styles.buttonDisabled,
-            ]}
-          >
-            <Text numberOfLines={1} style={styles.composerControlValue}>
-              GIT
-            </Text>
-          </Pressable>
-        </View>
-        <Text
-          style={[
-            styles.composerControlHint,
-            selectedConversationProviderStatus?.status === "warning" &&
-              styles.composerControlHintWarn,
-            selectedConversationProviderStatus?.status === "error" &&
-              styles.composerControlHintError,
-          ]}
-        >
-          {isLoadingConversationCapabilities
-            ? "Loading backend capability map..."
-            : `${selectedConversationProvider ? formatProviderLabel(selectedConversationProvider) : "Provider"} / ${selectedThread?.session?.status ?? "idle"} / ${formatAssistantDeliveryModeLabel(selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered")}${selectedConversationProviderStatus?.message ? ` / ${selectedConversationProviderStatus.message}` : ` / ${formatModelSwitchBehavior(conversationCapabilities?.modelSwitch ?? null)}`}`}
-        </Text>
+      <View
+        style={[
+          styles.composerShell,
+          Platform.OS === "android" && androidKeyboardInset > 0
+            ? { marginBottom: androidKeyboardInset }
+            : null,
+        ]}
+      >
         <TextInput
           multiline
           onChangeText={updateDraft}
@@ -1693,66 +1832,51 @@ export function AppShell() {
               void handleSelectConversationModel(option.slug);
             },
           }))
-        : conversationPickerMode === "access"
-          ? currentRuntimeModeOptions.map((option) => ({
-              key: option.mode,
-              title: formatRuntimeModeLabel(option.mode),
+        : conversationPickerMode === "reasoning"
+          ? selectedReasoningOptions.map((effort: ProviderReasoningEffort) => ({
+              key: effort,
+              title: formatReasoningEffortLabel(effort),
               meta:
-                option.mode === "full-access"
-                  ? "Bypass permission prompts for tools and file changes."
-                  : "Require approval before tools and file mutations run.",
-              current: option.mode === selectedThread.runtimeMode,
-              available: option.granted,
-              reason: option.reason ?? null,
+                selectedConversationProvider === "codex"
+                  ? "Controls model reasoning effort for the next turn."
+                  : "Controls Claude thinking effort for the next turn.",
+              current: effort === selectedThreadTurnPreference?.reasoningEffort,
+              available: true,
+              reason: null,
               onPress: () => {
-                void handleSelectConversationRuntimeMode(option.mode);
+                handleSelectReasoningEffort(effort);
               },
             }))
-          : conversationPickerMode === "reasoning"
-            ? selectedReasoningOptions.map((effort: ProviderReasoningEffort) => ({
-                key: effort,
-                title: formatReasoningEffortLabel(effort),
-                meta:
-                  selectedConversationProvider === "codex"
-                    ? "Controls model reasoning effort for the next turn."
-                    : "Controls Claude thinking effort for the next turn.",
-                current: effort === selectedThreadTurnPreference?.reasoningEffort,
-                available: true,
-                reason: null,
-                onPress: () => {
-                  handleSelectReasoningEffort(effort);
+          : conversationPickerMode === "delivery"
+            ? ([
+                {
+                  key: "buffered",
+                  title: "Queue reply",
+                  meta: "Buffer assistant output and reveal it when the turn finishes.",
+                  current:
+                    (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") ===
+                    "buffered",
+                  available: true,
+                  reason: null,
+                  onPress: () => {
+                    handleSelectAssistantDeliveryMode("buffered");
+                  },
                 },
-              }))
-            : conversationPickerMode === "delivery"
-              ? ([
-                  {
-                    key: "buffered",
-                    title: "Queue reply",
-                    meta: "Buffer assistant output and reveal it when the turn finishes.",
-                    current:
-                      (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") ===
-                      "buffered",
-                    available: true,
-                    reason: null,
-                    onPress: () => {
-                      handleSelectAssistantDeliveryMode("buffered");
-                    },
+                {
+                  key: "streaming",
+                  title: "Send immediately",
+                  meta: "Stream assistant deltas into the conversation as they arrive.",
+                  current:
+                    (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") ===
+                    "streaming",
+                  available: true,
+                  reason: null,
+                  onPress: () => {
+                    handleSelectAssistantDeliveryMode("streaming");
                   },
-                  {
-                    key: "streaming",
-                    title: "Send immediately",
-                    meta: "Stream assistant deltas into the conversation as they arrive.",
-                    current:
-                      (selectedThreadTurnPreference?.assistantDeliveryMode ?? "buffered") ===
-                      "streaming",
-                    available: true,
-                    reason: null,
-                    onPress: () => {
-                      handleSelectAssistantDeliveryMode("streaming");
-                    },
-                  },
-                ] as const)
-              : [];
+                },
+              ] as const)
+            : [];
 
     if (conversationPickerMode === "git") {
       const localBranches = (gitBranches?.branches ?? []).filter((branch) => !branch.isRemote);
@@ -1992,10 +2116,8 @@ export function AppShell() {
         >
           <View style={styles.projectPickerPathPanel}>
             <Text style={styles.projectPickerPathLabel}>
-              {conversationPickerMode === "model" || conversationPickerMode === "access"
-                ? isLoadingConversationCapabilities
-                  ? "Loading"
-                  : "Selected session"
+              {conversationPickerMode === "model" && isLoadingConversationCapabilities
+                ? "Loading"
                 : "Selected session"}
             </Text>
             <Text style={styles.projectPickerPathValue}>
@@ -2066,11 +2188,79 @@ export function AppShell() {
       <ScrollView contentContainerStyle={styles.floatingPanelScrollContent}>
         <View style={styles.floatingPanelHeader}>
           <Text style={styles.panelEyebrow}>Config</Text>
-          <Text style={styles.panelTitle}>Server + harness</Text>
+          <Text style={styles.panelTitle}>Server + appearance</Text>
           <Text style={styles.panelSubtitle}>
-            Connection and provider controls live here so the left rail stays focused on roots and
-            sessions.
+            Connection, theme, and provider controls live here so the left rail stays focused on
+            roots and sessions.
           </Text>
+        </View>
+
+        <View style={styles.settingsSection}>
+          <Text style={styles.sectionEyebrow}>Appearance</Text>
+          <View style={styles.themeFieldGroup}>
+            <View style={styles.themeField}>
+              <View style={styles.themeFieldHeader}>
+                <Text style={styles.themeFieldLabel}>Base neutral</Text>
+                <Text style={styles.themeFieldValue}>
+                  {getThemeNeutralLabel(connectionSettings.themeBase)}
+                </Text>
+              </View>
+              <View style={styles.themeOptionGrid}>
+                {FLEXOKI_DARK_NEUTRAL_OPTIONS.map((option) => (
+                  <Pressable
+                    key={option.id}
+                    onPress={() => {
+                      handleSelectThemeBase(option.id);
+                    }}
+                    style={[
+                      styles.themeOptionButton,
+                      connectionSettings.themeBase === option.id &&
+                        styles.themeOptionButtonSelected,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.themeOptionSwatch,
+                        { backgroundColor: option.value },
+                        connectionSettings.themeBase === option.id &&
+                          styles.themeOptionSwatchSelected,
+                      ]}
+                    />
+                    <Text style={styles.themeOptionLabel}>{option.label}</Text>
+                    <Text style={styles.themeOptionMeta}>{option.value}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.themeField}>
+              <View style={styles.themeFieldHeader}>
+                <Text style={styles.themeFieldLabel}>Accent</Text>
+                <Text style={styles.themeFieldValue}>
+                  {getThemeAccentLabel(connectionSettings.themeAccent)}
+                </Text>
+              </View>
+              <View style={styles.themeOptionGrid}>
+                {FLEXOKI_DARK_ACCENT_OPTIONS.map((option) => (
+                  <Pressable
+                    key={option.id}
+                    onPress={() => {
+                      handleSelectThemeAccent(option.id);
+                    }}
+                    style={[
+                      styles.themeOptionButton,
+                      connectionSettings.themeAccent === option.id &&
+                        styles.themeOptionButtonSelected,
+                    ]}
+                  >
+                    <View style={[styles.themeOptionSwatch, { backgroundColor: option.value }]} />
+                    <Text style={styles.themeOptionLabel}>{option.label}</Text>
+                    <Text style={styles.themeOptionMeta}>{option.value}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          </View>
         </View>
 
         <View style={styles.settingsSection}>
@@ -2298,36 +2488,46 @@ export function AppShell() {
   );
 
   return (
-    <SafeAreaProvider>
+    <AppThemeContext.Provider value={themeContextValue}>
       <SafeAreaView style={styles.safeArea} edges={["top", "right", "bottom", "left"]}>
         {/* oxlint-disable-next-line react/style-prop-object */}
         <StatusBar style="light" />
         <View style={styles.shellBackground}>
           <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            behavior="padding"
+            enabled={Platform.OS === "ios"}
             keyboardVerticalOffset={insets.top}
             style={styles.keyboardAvoider}
           >
             <View style={styles.shellLayout}>
               <View style={styles.topBar}>
                 {!sidebarPersistent ? (
-                  <ActionButton emphasis="secondary" label="Tree" onPress={openNavMenu} />
+                  <IconButton accessibilityLabel="Open tree" icon="☰" onPress={openNavMenu} />
                 ) : (
                   <View style={styles.topBarSpacer} />
                 )}
 
                 <View style={styles.topBarCopy}>
-                  <Text style={styles.topBarEyebrow}>MIKROCODE</Text>
                   <Text numberOfLines={1} style={styles.topBarTitle}>
-                    {topBarPrimary}
+                    {`MIKROCODE / ${topBarPrimary}`}
                   </Text>
                   <Text numberOfLines={1} style={styles.topBarSubtitle}>
                     {topBarSecondary}
                   </Text>
                 </View>
 
-                <ActionButton emphasis="ghost" label="Config" onPress={openSettingsPanel} />
+                <IconButton accessibilityLabel="Open config" icon="⚙" onPress={openSettingsPanel} />
               </View>
+
+              {toastMessage ? (
+                <View pointerEvents="none" style={styles.toastOverlay}>
+                  <View style={styles.toastBubble}>
+                    <Text numberOfLines={1} style={styles.toastText}>
+                      {toastMessage}
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
 
               <View style={styles.appFrame}>
                 {sidebarPersistent ? (
@@ -2412,1053 +2612,1200 @@ export function AppShell() {
           </KeyboardAvoidingView>
         </View>
       </SafeAreaView>
-    </SafeAreaProvider>
+    </AppThemeContext.Provider>
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: TERMINAL_BG,
-  },
-  shellBackground: {
-    flex: 1,
-    backgroundColor: TERMINAL_BG,
-  },
-  keyboardAvoider: {
-    flex: 1,
-  },
-  shellLayout: {
-    flex: 1,
-  },
-  appFrame: {
-    flex: 1,
-    flexDirection: "row",
-    gap: 8,
-    padding: 8,
-    paddingTop: 6,
-  },
-  sidebarFrame: {
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    overflow: "hidden",
-  },
-  sidebarRoot: {
-    backgroundColor: TERMINAL_PANEL,
-    flex: 1,
-  },
-  sidebarSafeArea: {
-    flex: 1,
-  },
-  sidebarHeader: {
-    borderBottomColor: TERMINAL_BORDER,
-    borderBottomWidth: 1,
-    gap: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-  },
-  brandMark: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 18,
-    fontWeight: "700",
-    letterSpacing: 1.2,
-  },
-  sidebarHeaderCopy: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    lineHeight: 14,
-  },
-  sidebarActions: {
-    flexDirection: "row",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingTop: 8,
-  },
-  sidebarScrollContent: {
-    gap: 12,
-    padding: 12,
-    paddingBottom: 18,
-  },
-  navSection: {
-    gap: 8,
-  },
-  navSectionLabel: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1.4,
-    textTransform: "uppercase",
-  },
-  projectGroup: {
-    gap: 2,
-  },
-  projectRow: {
-    alignItems: "center",
-    backgroundColor: "transparent",
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    flexDirection: "row",
-    gap: 10,
-    paddingHorizontal: 9,
-    paddingVertical: 8,
-  },
-  projectRowActive: {
-    backgroundColor: TERMINAL_PANEL_ALT,
-    borderColor: TERMINAL_ACCENT,
-  },
-  projectCopy: {
-    flex: 1,
-  },
-  projectSelectButton: {
-    alignItems: "center",
-    flex: 1,
-    flexDirection: "row",
-    gap: 10,
-  },
-  projectTitle: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  projectCount: {
-    color: TERMINAL_ACCENT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    fontWeight: "700",
-  },
-  projectInlineActions: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 8,
-  },
-  projectHeaderDestructiveAction: {
-    borderLeftColor: TERMINAL_BORDER,
-    borderLeftWidth: 1,
-    marginLeft: 2,
-    paddingLeft: 8,
-    paddingVertical: 4,
-  },
-  inlineDestructiveActionLabel: {
-    color: "#ff8d8d",
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.4,
-    textTransform: "uppercase",
-  },
-  threadGroup: {
-    gap: 1,
-    paddingLeft: 12,
-  },
-  threadRow: {
-    alignItems: "center",
-    borderLeftColor: TERMINAL_BORDER,
-    borderLeftWidth: 1,
-    flexDirection: "row",
-    gap: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  threadRowActive: {
-    backgroundColor: TERMINAL_ACCENT_SOFT,
-    borderLeftColor: TERMINAL_ACCENT,
-  },
-  threadRowCopy: { flex: 1 },
-  threadTitle: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 12,
-    fontWeight: "500",
-  },
-  statusPulse: {
-    backgroundColor: "#3a4764",
-    borderRadius: 999,
-    height: 6,
-    width: 6,
-  },
-  statusPulseLive: {
-    backgroundColor: TERMINAL_ACCENT,
-  },
-  statusPulseError: {
-    backgroundColor: "#ff7676",
-  },
-  emptyThreadsCopy: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    lineHeight: 14,
-  },
-  emptyProjectsCopy: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 12,
-    lineHeight: 16,
-  },
-  helperText: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    lineHeight: 15,
-  },
-  input: {
-    backgroundColor: TERMINAL_BG,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-  },
-  inlineButtonRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  directoryBrowser: {
-    backgroundColor: TERMINAL_PANEL_ALT,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    gap: 0,
-    maxHeight: 220,
-    padding: 0,
-  },
-  directoryRow: {
-    backgroundColor: "transparent",
-    borderBottomColor: TERMINAL_BORDER,
-    borderBottomWidth: 1,
-    gap: 2,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  directoryTitle: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  directoryMeta: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    textTransform: "uppercase",
-  },
-  projectPickerCard: {
-    backgroundColor: TERMINAL_PANEL,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    overflow: "hidden",
-  },
-  conversationPickerCard: {
-    backgroundColor: TERMINAL_PANEL,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    overflow: "hidden",
-  },
-  projectPickerHeader: {
-    borderBottomColor: TERMINAL_BORDER,
-    borderBottomWidth: 1,
-    gap: 6,
-    padding: 12,
-  },
-  projectPickerScrollContent: {
-    gap: 10,
-    padding: 12,
-  },
-  projectPickerPathPanel: {
-    backgroundColor: TERMINAL_BG,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    gap: 4,
-    padding: 10,
-  },
-  projectPickerPathLabel: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-  },
-  projectPickerPathValue: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 12,
-    lineHeight: 18,
-  },
-  projectPickerBrowser: {
-    maxHeight: 300,
-    minHeight: 240,
-  },
-  projectPickerEmptyState: {
-    justifyContent: "center",
-    minHeight: 120,
-    padding: 10,
-  },
-  projectPickerFieldGroup: {
-    gap: 8,
-  },
-  projectPickerInputRow: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 8,
-  },
-  projectPickerInput: {
-    flex: 1,
-  },
-  projectPickerActionCell: {
-    minWidth: 112,
-  },
-  projectPickerFooter: {
-    borderTopColor: TERMINAL_BORDER,
-    borderTopWidth: 1,
-    flexDirection: "row",
-    gap: 8,
-    justifyContent: "flex-end",
-    padding: 12,
-  },
-  workspaceFrame: {
-    flex: 1,
-    gap: 6,
-  },
-  topBar: {
-    alignItems: "center",
-    backgroundColor: TERMINAL_BG,
-    borderBottomColor: TERMINAL_BORDER,
-    borderBottomWidth: 1,
-    flexDirection: "row",
-    gap: 8,
-    minHeight: 44,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  topBarSpacer: {
-    width: 72,
-  },
-  topBarCopy: {
-    flex: 1,
-    gap: 1,
-  },
-  topBarEyebrow: {
-    color: TERMINAL_ACCENT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 9,
-    fontWeight: "700",
-    letterSpacing: 0.9,
-    textTransform: "uppercase",
-  },
-  topBarTitle: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  topBarSubtitle: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-  },
-  workspaceSurface: {
-    backgroundColor: TERMINAL_PANEL_ALT,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    flex: 1,
-    overflow: "hidden",
-  },
-  workspaceScrollContent: {
-    gap: 10,
-    padding: 10,
-    paddingBottom: 14,
-  },
-  recentSection: {
-    gap: 6,
-  },
-  recentSectionActions: {
-    alignItems: "center",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  inlineSubtleAction: {
-    paddingVertical: 6,
-  },
-  inlineSubtleActionLabel: {
-    color: TERMINAL_ACCENT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    fontWeight: "700",
-    textTransform: "uppercase",
-  },
-  recentRail: {
-    backgroundColor: TERMINAL_PANEL,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    overflow: "hidden",
-  },
-  swipeRowShell: {
-    backgroundColor: TERMINAL_PANEL,
-    minHeight: 44,
-    overflow: "hidden",
-  },
-  swipeRowAction: {
-    alignItems: "flex-end",
-    backgroundColor: "#101924",
-    bottom: 0,
-    justifyContent: "center",
-    paddingHorizontal: 12,
-    position: "absolute",
-    right: 0,
-    top: 0,
-    width: 132,
-  },
-  swipeRowActionButton: {
-    alignItems: "center",
-    backgroundColor: TERMINAL_ACCENT_SOFT,
-    borderColor: TERMINAL_ACCENT,
-    borderWidth: 1,
-    minWidth: 84,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  swipeRowActionLabel: {
-    color: TERMINAL_ACCENT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    fontWeight: "700",
-    textTransform: "uppercase",
-  },
-  swipeRowContent: {
-    backgroundColor: TERMINAL_PANEL,
-  },
-  recentRow: {
-    alignItems: "center",
-    borderBottomColor: TERMINAL_BORDER,
-    borderBottomWidth: 1,
-    flexDirection: "row",
-    gap: 8,
-    minHeight: 44,
-    paddingHorizontal: 9,
-    paddingVertical: 7,
-  },
-  recentRowAccent: {
-    alignSelf: "stretch",
-    backgroundColor: TERMINAL_ACCENT,
-    width: 2,
-  },
-  recentRowCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  recentRowTitle: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  recentRowMeta: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-  },
-  recentRowTime: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    maxWidth: 92,
-    textAlign: "right",
-  },
-  metricLabel: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1.1,
-    textTransform: "uppercase",
-  },
-  errorBanner: {
-    backgroundColor: "#1a0d13",
-    borderColor: "#592437",
-    borderWidth: 1,
-    gap: 6,
-    padding: 10,
-  },
-  errorTitle: {
-    color: "#ff8d8d",
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  errorText: {
-    color: "#f2b9c3",
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  homeGrid: {
-    gap: 10,
-  },
-  homeGridWide: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-  },
-  flatSection: {
-    backgroundColor: TERMINAL_PANEL,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    flex: 1,
-    gap: 8,
-    minWidth: 260,
-    padding: 10,
-  },
-  sectionHeadingRow: {
-    alignItems: "flex-start",
-    flexDirection: "row",
-    gap: 8,
-    justifyContent: "space-between",
-  },
-  sectionSubtleText: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-  },
-  sectionEyebrow: {
-    color: TERMINAL_ACCENT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1.1,
-    textTransform: "uppercase",
-  },
-  sectionTitle: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 16,
-    fontWeight: "700",
-  },
-  compactList: {
-    gap: 0,
-  },
-  providerRow: {
-    alignItems: "center",
-    borderTopColor: TERMINAL_BORDER,
-    borderTopWidth: 1,
-    flexDirection: "row",
-    gap: 10,
-    paddingVertical: 8,
-  },
-  providerCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  providerTitle: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
-    fontWeight: "700",
-  },
-  providerMeta: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    lineHeight: 15,
-  },
-  providerStatus: {
-    color: TERMINAL_ACCENT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 0.8,
-    textTransform: "uppercase",
-  },
-  providerStatusWarning: {
-    color: "#f7c56a",
-  },
-  providerStatusError: {
-    color: "#ff8d8d",
-  },
-  metaRow: {
-    borderTopColor: TERMINAL_BORDER,
-    borderTopWidth: 1,
-    gap: 3,
-    paddingVertical: 7,
-  },
-  metaLabel: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-  },
-  metaValue: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
-    lineHeight: 17,
-  },
-  metaValueAccent: {
-    color: TERMINAL_ACCENT,
-    fontWeight: "700",
-  },
-  compactThreadRow: {
-    borderTopColor: TERMINAL_BORDER,
-    borderTopWidth: 1,
-    gap: 3,
-    paddingVertical: 8,
-  },
-  compactThreadTitle: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  compactThreadMeta: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-  },
-  compactThreadStatus: {
-    color: TERMINAL_ACCENT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    fontWeight: "700",
-    textTransform: "uppercase",
-  },
-  threadShell: {
-    flex: 1,
-  },
-  threadHeader: {
-    backgroundColor: TERMINAL_PANEL,
-    borderBottomColor: TERMINAL_BORDER,
-    borderBottomWidth: 1,
-    gap: 8,
-    padding: 10,
-  },
-  threadHeaderCopy: {
-    gap: 4,
-  },
-  threadHeaderEyebrow: {
-    color: TERMINAL_ACCENT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1.1,
-    textTransform: "uppercase",
-  },
-  threadHeaderTitle: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 18,
-    fontWeight: "700",
-    lineHeight: 22,
-  },
-  threadHeaderMeta: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    lineHeight: 16,
-  },
-  threadControlStrip: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  threadControlButton: {
-    backgroundColor: TERMINAL_BG,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    flex: 1,
-    gap: 4,
-    minHeight: 56,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  threadControlLabel: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-  },
-  threadControlValue: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
-    fontWeight: "700",
-  },
-  threadControlHint: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    lineHeight: 15,
-  },
-  threadControlHintWarn: {
-    color: "#f7c56a",
-  },
-  threadControlHintError: {
-    color: "#ff8d8d",
-  },
-  threadStatRow: {
-    backgroundColor: TERMINAL_BG,
-    borderTopColor: TERMINAL_BORDER,
-    borderTopWidth: 1,
-    flexDirection: "row",
-    marginTop: 2,
-  },
-  threadStatItem: {
-    borderRightColor: TERMINAL_BORDER,
-    borderRightWidth: 1,
-    flex: 1,
-    gap: 2,
-    paddingHorizontal: 8,
-    paddingVertical: 7,
-  },
-  threadStatValue: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  threadHeaderActions: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  messagesScroll: {
-    flex: 1,
-  },
-  messagesScrollContent: {
-    gap: 4,
-    padding: 8,
-    paddingBottom: 12,
-  },
-  messageWrap: {
-    maxWidth: "100%",
-  },
-  messageWrapUser: {
-    alignSelf: "flex-end",
-  },
-  messageWrapAssistant: {
-    alignSelf: "flex-start",
-  },
-  messageRow: {
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  messageRowUser: {
-    backgroundColor: "#0d1e18",
-    borderColor: "#1f6048",
-  },
-  messageRowAssistant: {
-    backgroundColor: "#09101f",
-    borderColor: "#24324f",
-  },
-  messageText: {
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  messageTextUser: {
-    color: "#ddffed",
-  },
-  messageTextAssistant: {
-    color: TERMINAL_TEXT,
-  },
-  messageMetaReveal: {
-    alignSelf: "flex-start",
-    backgroundColor: TERMINAL_BG,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    marginTop: 3,
-    paddingHorizontal: 7,
-    paddingVertical: 5,
-  },
-  messageMetaRevealUser: {
-    alignSelf: "flex-end",
-    borderColor: "#1f6048",
-  },
-  messageMetaRevealAssistant: {
-    alignSelf: "flex-start",
-    borderColor: "#24324f",
-  },
-  messageMetaRevealText: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-  },
-  emptyConversation: {
-    alignItems: "flex-start",
-    gap: 6,
-    paddingVertical: 10,
-  },
-  composerShell: {
-    backgroundColor: TERMINAL_PANEL,
-    borderTopColor: TERMINAL_BORDER,
-    borderTopWidth: 1,
-    gap: 5,
-    padding: 8,
-  },
-  composerControlStrip: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-  },
-  composerControlButton: {
-    backgroundColor: TERMINAL_BG,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    flex: 1,
-    justifyContent: "center",
-    minHeight: 32,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  composerControlButtonCompact: {
-    flexGrow: 0,
-    minWidth: 74,
-  },
-  composerControlButtonAccess: {
-    flex: 0,
-    minWidth: 68,
-  },
-  composerControlValue: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    fontWeight: "700",
-    textTransform: "uppercase",
-  },
-  composerControlHint: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    lineHeight: 13,
-  },
-  composerControlHintWarn: {
-    color: "#f7c56a",
-  },
-  composerControlHintError: {
-    color: "#ff8d8d",
-  },
-  composerInput: {
-    backgroundColor: TERMINAL_BG,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
-    minHeight: 68,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  composerFooter: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 8,
-    justifyContent: "space-between",
-  },
-  composerActionCluster: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-  },
-  composerRunAction: {
-    minWidth: 112,
-  },
-  gitCommitInput: {
-    minHeight: 90,
-  },
-  buttonBase: {
-    alignItems: "center",
-    backgroundColor: "transparent",
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    minHeight: 36,
-    justifyContent: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  buttonCompact: {
-    minHeight: 30,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  buttonPrimary: {
-    backgroundColor: TERMINAL_ACCENT_SOFT,
-    borderColor: TERMINAL_ACCENT,
-  },
-  buttonSecondary: {
-    backgroundColor: TERMINAL_PANEL_ALT,
-  },
-  buttonGhost: {
-    backgroundColor: "transparent",
-  },
-  buttonSurface: {
-    backgroundColor: TERMINAL_BG,
-  },
-  buttonDisabled: {
-    opacity: 0.42,
-  },
-  buttonLabel: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 12,
-    fontWeight: "700",
-    letterSpacing: 0.4,
-  },
-  buttonLabelPrimary: {
-    color: TERMINAL_ACCENT,
-  },
-  buttonLabelSurface: {
-    color: TERMINAL_TEXT,
-  },
-  buttonLabelSecondary: {
-    color: TERMINAL_TEXT,
-  },
-  overlayRoot: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  overlayRow: {
-    flex: 1,
-    flexDirection: "row",
-  },
-  overlayBackdrop: {
-    backgroundColor: "rgba(5, 8, 22, 0.74)",
-    flex: 1,
-  },
-  modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(5, 8, 22, 0.82)",
-  },
-  modalCenterWrap: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 12,
-  },
-  overlayPanelLeft: {
-    borderRightColor: TERMINAL_BORDER,
-    borderRightWidth: 1,
-  },
-  overlayPanelRight: {
-    borderLeftColor: TERMINAL_BORDER,
-    borderLeftWidth: 1,
-  },
-  floatingPanelSafeArea: {
-    backgroundColor: TERMINAL_PANEL,
-    flex: 1,
-  },
-  floatingPanelScrollContent: {
-    gap: 10,
-    padding: 10,
-    paddingBottom: 16,
-  },
-  floatingPanelHeader: {
-    gap: 6,
-  },
-  panelEyebrow: {
-    color: TERMINAL_ACCENT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 1.1,
-    textTransform: "uppercase",
-  },
-  panelTitle: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 18,
-    fontWeight: "700",
-  },
-  panelSubtitle: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    lineHeight: 16,
-  },
-  settingsSection: {
-    backgroundColor: TERMINAL_PANEL_ALT,
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-    gap: 10,
-    padding: 10,
-  },
-  switchRow: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  selectionList: {
-    borderColor: TERMINAL_BORDER,
-    borderWidth: 1,
-  },
-  selectionRow: {
-    alignItems: "center",
-    backgroundColor: TERMINAL_PANEL_ALT,
-    borderBottomColor: TERMINAL_BORDER,
-    borderBottomWidth: 1,
-    flexDirection: "row",
-    gap: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-  },
-  selectionRowCurrent: {
-    backgroundColor: TERMINAL_ACCENT_SOFT,
-    borderColor: TERMINAL_ACCENT,
-  },
-  selectionRowCopy: {
-    flex: 1,
-    gap: 3,
-  },
-  selectionRowHeading: {
-    alignItems: "center",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  selectionRowTitle: {
-    color: TERMINAL_TEXT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
-    fontWeight: "700",
-  },
-  selectionRowCurrentTag: {
-    color: TERMINAL_ACCENT,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 0.8,
-    textTransform: "uppercase",
-  },
-  selectionRowMeta: {
-    color: TERMINAL_MUTED,
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    lineHeight: 15,
-  },
-  selectionRowReason: {
-    color: "#f2b9c3",
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 11,
-    lineHeight: 15,
-  },
-  selectionRowStatus: {
-    fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 0.8,
-    textTransform: "uppercase",
-  },
-  selectionRowStatusReady: {
-    color: TERMINAL_ACCENT,
-  },
-  selectionRowStatusBlocked: {
-    color: "#ff8d8d",
-  },
-});
+export function AppShell() {
+  return <AppShellContent />;
+}
+
+function createStyles(theme: AppTheme) {
+  const TERMINAL_BG = theme.background;
+  const TERMINAL_PANEL = theme.panel;
+  const TERMINAL_PANEL_ALT = theme.panelAlt;
+  const TERMINAL_BORDER = theme.border;
+  const TERMINAL_BORDER_STRONG = theme.borderStrong;
+  const TERMINAL_TEXT = theme.text;
+  const TERMINAL_MUTED = theme.muted;
+  const TERMINAL_ACCENT = theme.accent;
+  const TERMINAL_ACCENT_SOFT = theme.accentSoft;
+  const TERMINAL_ACCENT_SOFT_STRONG = theme.accentSoftStrong;
+  const TERMINAL_WARNING = theme.warning;
+  const TERMINAL_DANGER = theme.danger;
+  const TERMINAL_DANGER_SOFT = theme.dangerSoft;
+  const TERMINAL_OVERLAY = theme.overlay;
+  const TERMINAL_MODAL_OVERLAY = theme.modalOverlay;
+  const TERMINAL_USER_MESSAGE_BACKGROUND = theme.userMessageBackground;
+  const TERMINAL_USER_MESSAGE_BORDER = theme.userMessageBorder;
+  const TERMINAL_ASSISTANT_MESSAGE_BACKGROUND = theme.assistantMessageBackground;
+  const TERMINAL_ASSISTANT_MESSAGE_BORDER = theme.assistantMessageBorder;
+
+  return StyleSheet.create({
+    safeArea: {
+      flex: 1,
+      backgroundColor: TERMINAL_BG,
+    },
+    shellBackground: {
+      flex: 1,
+      backgroundColor: TERMINAL_BG,
+    },
+    keyboardAvoider: {
+      flex: 1,
+    },
+    shellLayout: {
+      flex: 1,
+    },
+    appFrame: {
+      flex: 1,
+      flexDirection: "row",
+      gap: 6,
+      padding: 6,
+      paddingTop: 4,
+    },
+    sidebarFrame: {
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      overflow: "hidden",
+    },
+    sidebarRoot: {
+      backgroundColor: TERMINAL_PANEL,
+      flex: 1,
+    },
+    sidebarSafeArea: {
+      flex: 1,
+    },
+    sidebarHeader: {
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+      gap: 4,
+      paddingHorizontal: 12,
+      paddingVertical: 11,
+    },
+    brandMark: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 18,
+      fontWeight: "700",
+      letterSpacing: 1.2,
+    },
+    sidebarHeaderCopy: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 14,
+    },
+    sidebarActions: {
+      flexDirection: "row",
+      gap: 8,
+      paddingHorizontal: 12,
+      paddingTop: 8,
+    },
+    sidebarScrollContent: {
+      gap: 12,
+      padding: 12,
+      paddingBottom: 18,
+    },
+    navSection: {
+      gap: 8,
+    },
+    navSectionLabel: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 1.4,
+      textTransform: "uppercase",
+    },
+    projectGroup: {
+      gap: 2,
+    },
+    projectRow: {
+      alignItems: "center",
+      backgroundColor: "transparent",
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      flexDirection: "row",
+      gap: 10,
+      paddingHorizontal: 9,
+      paddingVertical: 8,
+    },
+    projectRowActive: {
+      backgroundColor: TERMINAL_PANEL_ALT,
+      borderColor: TERMINAL_ACCENT,
+    },
+    projectCopy: {
+      flex: 1,
+    },
+    projectSelectButton: {
+      alignItems: "center",
+      flex: 1,
+      flexDirection: "row",
+      gap: 10,
+    },
+    projectTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      fontWeight: "700",
+    },
+    projectCount: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+    },
+    projectInlineActions: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 8,
+    },
+    projectHeaderDestructiveAction: {
+      borderLeftColor: TERMINAL_BORDER,
+      borderLeftWidth: 1,
+      marginLeft: 2,
+      paddingLeft: 8,
+      paddingVertical: 4,
+    },
+    inlineDestructiveActionLabel: {
+      color: TERMINAL_DANGER,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      letterSpacing: 0.4,
+      textTransform: "uppercase",
+    },
+    threadGroup: {
+      gap: 1,
+      paddingLeft: 12,
+    },
+    threadRow: {
+      alignItems: "center",
+      borderLeftColor: TERMINAL_BORDER,
+      borderLeftWidth: 1,
+      flexDirection: "row",
+      gap: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+    },
+    threadRowActive: {
+      backgroundColor: TERMINAL_ACCENT_SOFT,
+      borderLeftColor: TERMINAL_ACCENT,
+    },
+    threadRowCopy: { flex: 1 },
+    threadTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      fontWeight: "500",
+    },
+    statusPulse: {
+      backgroundColor: TERMINAL_BORDER_STRONG,
+      borderRadius: 999,
+      height: 6,
+      width: 6,
+    },
+    statusPulseLive: {
+      backgroundColor: TERMINAL_ACCENT,
+    },
+    statusPulseError: {
+      backgroundColor: TERMINAL_DANGER,
+    },
+    emptyThreadsCopy: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 14,
+    },
+    emptyProjectsCopy: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      lineHeight: 16,
+    },
+    helperText: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 15,
+    },
+    input: {
+      backgroundColor: TERMINAL_BG,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      paddingHorizontal: 10,
+      paddingVertical: 10,
+    },
+    inlineButtonRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+    },
+    directoryBrowser: {
+      backgroundColor: TERMINAL_PANEL_ALT,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      gap: 0,
+      maxHeight: 220,
+      padding: 0,
+    },
+    directoryRow: {
+      backgroundColor: "transparent",
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+      gap: 2,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+    },
+    directoryTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      fontWeight: "600",
+    },
+    directoryMeta: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      textTransform: "uppercase",
+    },
+    projectPickerCard: {
+      backgroundColor: TERMINAL_PANEL,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      overflow: "hidden",
+    },
+    conversationPickerCard: {
+      backgroundColor: TERMINAL_PANEL,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      overflow: "hidden",
+    },
+    projectPickerHeader: {
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+      gap: 6,
+      padding: 12,
+    },
+    projectPickerScrollContent: {
+      gap: 10,
+      padding: 12,
+    },
+    projectPickerPathPanel: {
+      backgroundColor: TERMINAL_BG,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      gap: 4,
+      padding: 10,
+    },
+    projectPickerPathLabel: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 1,
+      textTransform: "uppercase",
+    },
+    projectPickerPathValue: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      lineHeight: 18,
+    },
+    projectPickerBrowser: {
+      maxHeight: 300,
+      minHeight: 240,
+    },
+    projectPickerEmptyState: {
+      justifyContent: "center",
+      minHeight: 120,
+      padding: 10,
+    },
+    projectPickerFieldGroup: {
+      gap: 8,
+    },
+    projectPickerInputRow: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 8,
+    },
+    projectPickerInput: {
+      flex: 1,
+    },
+    projectPickerActionCell: {
+      minWidth: 112,
+    },
+    projectPickerFooter: {
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
+      flexDirection: "row",
+      gap: 8,
+      justifyContent: "flex-end",
+      padding: 12,
+    },
+    workspaceFrame: {
+      flex: 1,
+      gap: 4,
+    },
+    topBar: {
+      alignItems: "center",
+      backgroundColor: TERMINAL_BG,
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+      flexDirection: "row",
+      gap: 6,
+      minHeight: 34,
+      paddingHorizontal: 6,
+      paddingVertical: 4,
+    },
+    topBarSpacer: {
+      width: 28,
+    },
+    topBarCopy: {
+      flex: 1,
+      gap: 0,
+    },
+    topBarTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+    },
+    topBarSubtitle: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+    },
+    iconButton: {
+      alignItems: "center",
+      justifyContent: "center",
+      minHeight: 28,
+      minWidth: 28,
+    },
+    iconButtonLabel: {
+      color: TERMINAL_TEXT,
+      fontSize: 16,
+      lineHeight: 18,
+    },
+    workspaceSurface: {
+      backgroundColor: TERMINAL_PANEL_ALT,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      flex: 1,
+      overflow: "hidden",
+    },
+    toastOverlay: {
+      alignItems: "center",
+      left: 0,
+      paddingHorizontal: 12,
+      position: "absolute",
+      right: 0,
+      top: 46,
+      zIndex: 20,
+    },
+    toastBubble: {
+      backgroundColor: TERMINAL_PANEL,
+      borderColor: TERMINAL_ACCENT,
+      borderWidth: 1,
+      maxWidth: "100%",
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+    },
+    toastText: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+    },
+    workspaceScrollContent: {
+      gap: 10,
+      padding: 10,
+      paddingBottom: 14,
+    },
+    recentSection: {
+      gap: 6,
+    },
+    recentSectionActions: {
+      alignItems: "center",
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+    },
+    inlineSubtleAction: {
+      paddingVertical: 6,
+    },
+    inlineSubtleActionLabel: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      textTransform: "uppercase",
+    },
+    recentRail: {
+      backgroundColor: TERMINAL_PANEL,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      overflow: "hidden",
+    },
+    swipeRowShell: {
+      backgroundColor: TERMINAL_PANEL,
+      minHeight: 44,
+      overflow: "hidden",
+    },
+    swipeRowAction: {
+      alignItems: "flex-end",
+      backgroundColor: TERMINAL_PANEL_ALT,
+      bottom: 0,
+      justifyContent: "center",
+      paddingHorizontal: 12,
+      position: "absolute",
+      right: 0,
+      top: 0,
+      width: 132,
+    },
+    swipeRowActionButton: {
+      alignItems: "center",
+      backgroundColor: TERMINAL_ACCENT_SOFT,
+      borderColor: TERMINAL_ACCENT,
+      borderWidth: 1,
+      minWidth: 84,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+    },
+    swipeRowActionLabel: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      textTransform: "uppercase",
+    },
+    swipeRowContent: {
+      backgroundColor: TERMINAL_PANEL,
+    },
+    recentRow: {
+      alignItems: "center",
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+      flexDirection: "row",
+      gap: 8,
+      minHeight: 44,
+      paddingHorizontal: 9,
+      paddingVertical: 7,
+    },
+    recentRowAccent: {
+      alignSelf: "stretch",
+      backgroundColor: TERMINAL_ACCENT,
+      width: 2,
+    },
+    recentRowCopy: {
+      flex: 1,
+      gap: 2,
+    },
+    recentRowTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      fontWeight: "700",
+    },
+    recentRowMeta: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+    },
+    recentRowTime: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      maxWidth: 92,
+      textAlign: "right",
+    },
+    metricLabel: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 1.1,
+      textTransform: "uppercase",
+    },
+    errorBanner: {
+      backgroundColor: TERMINAL_DANGER_SOFT,
+      borderColor: TERMINAL_DANGER,
+      borderWidth: 1,
+      gap: 6,
+      padding: 10,
+    },
+    errorTitle: {
+      color: TERMINAL_DANGER,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 14,
+      fontWeight: "700",
+    },
+    errorText: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      lineHeight: 18,
+    },
+    homeGrid: {
+      gap: 10,
+    },
+    homeGridWide: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+    },
+    flatSection: {
+      backgroundColor: TERMINAL_PANEL,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      flex: 1,
+      gap: 8,
+      minWidth: 260,
+      padding: 10,
+    },
+    sectionHeadingRow: {
+      alignItems: "flex-start",
+      flexDirection: "row",
+      gap: 8,
+      justifyContent: "space-between",
+    },
+    sectionSubtleText: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+    },
+    sectionEyebrow: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 1.1,
+      textTransform: "uppercase",
+    },
+    sectionTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 16,
+      fontWeight: "700",
+    },
+    compactList: {
+      gap: 0,
+    },
+    providerRow: {
+      alignItems: "center",
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
+      flexDirection: "row",
+      gap: 10,
+      paddingVertical: 8,
+    },
+    providerCopy: {
+      flex: 1,
+      gap: 2,
+    },
+    providerTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      fontWeight: "700",
+    },
+    providerMeta: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 15,
+    },
+    providerStatus: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.8,
+      textTransform: "uppercase",
+    },
+    providerStatusWarning: {
+      color: TERMINAL_WARNING,
+    },
+    providerStatusError: {
+      color: TERMINAL_DANGER,
+    },
+    metaRow: {
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
+      gap: 3,
+      paddingVertical: 7,
+    },
+    metaLabel: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 1,
+      textTransform: "uppercase",
+    },
+    metaValue: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      lineHeight: 17,
+    },
+    metaValueAccent: {
+      color: TERMINAL_ACCENT,
+      fontWeight: "700",
+    },
+    compactThreadRow: {
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
+      gap: 3,
+      paddingVertical: 8,
+    },
+    compactThreadTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      fontWeight: "600",
+    },
+    compactThreadMeta: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+    },
+    compactThreadStatus: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      textTransform: "uppercase",
+    },
+    threadShell: {
+      flex: 1,
+    },
+    threadHeader: {
+      backgroundColor: TERMINAL_PANEL,
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+      paddingHorizontal: 6,
+      paddingVertical: 5,
+    },
+    threadHeaderCopy: {
+      gap: 4,
+    },
+    threadHeaderEyebrow: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 1.1,
+      textTransform: "uppercase",
+    },
+    threadHeaderTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 18,
+      fontWeight: "700",
+      lineHeight: 22,
+    },
+    threadHeaderMeta: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 16,
+    },
+    threadControlStrip: {
+      flexDirection: "row",
+      gap: 8,
+    },
+    threadControlButton: {
+      backgroundColor: TERMINAL_BG,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      flex: 1,
+      gap: 4,
+      minHeight: 56,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+    },
+    threadControlLabel: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 1,
+      textTransform: "uppercase",
+    },
+    threadControlValue: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      fontWeight: "700",
+    },
+    threadControlHint: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 15,
+    },
+    threadControlHintWarn: {
+      color: TERMINAL_WARNING,
+    },
+    threadControlHintError: {
+      color: TERMINAL_DANGER,
+    },
+    threadStatRow: {
+      backgroundColor: TERMINAL_BG,
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
+      flexDirection: "row",
+      marginTop: 2,
+    },
+    threadStatItem: {
+      borderRightColor: TERMINAL_BORDER,
+      borderRightWidth: 1,
+      flex: 1,
+      gap: 2,
+      paddingHorizontal: 8,
+      paddingVertical: 7,
+    },
+    threadStatValue: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      fontWeight: "600",
+    },
+    threadHeaderActions: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+    },
+    messagesScroll: {
+      flex: 1,
+    },
+    messagesScrollContent: {
+      gap: 3,
+      padding: 6,
+      paddingBottom: 8,
+    },
+    messageWrap: {
+      maxWidth: "100%",
+    },
+    messageWrapUser: {
+      alignSelf: "flex-end",
+    },
+    messageWrapAssistant: {
+      alignSelf: "flex-start",
+    },
+    messageRow: {
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+    },
+    messageRowUser: {
+      backgroundColor: TERMINAL_USER_MESSAGE_BACKGROUND,
+      borderColor: TERMINAL_USER_MESSAGE_BORDER,
+    },
+    messageRowAssistant: {
+      backgroundColor: TERMINAL_ASSISTANT_MESSAGE_BACKGROUND,
+      borderColor: TERMINAL_ASSISTANT_MESSAGE_BORDER,
+    },
+    messageText: {
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      lineHeight: 17,
+    },
+    messageTextUser: {
+      color: TERMINAL_TEXT,
+    },
+    messageTextAssistant: {
+      color: TERMINAL_TEXT,
+    },
+    messageMetaReveal: {
+      alignSelf: "flex-start",
+      backgroundColor: TERMINAL_BG,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      marginTop: 3,
+      paddingHorizontal: 7,
+      paddingVertical: 5,
+    },
+    messageMetaRevealUser: {
+      alignSelf: "flex-end",
+      borderColor: TERMINAL_USER_MESSAGE_BORDER,
+    },
+    messageMetaRevealAssistant: {
+      alignSelf: "flex-start",
+      borderColor: TERMINAL_ASSISTANT_MESSAGE_BORDER,
+    },
+    messageMetaRevealText: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+    },
+    emptyConversation: {
+      alignItems: "flex-start",
+      gap: 5,
+      paddingVertical: 8,
+    },
+    composerShell: {
+      backgroundColor: TERMINAL_PANEL,
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
+      gap: 4,
+      padding: 6,
+    },
+    composerControlStrip: {
+      flexDirection: "row",
+      gap: 4,
+    },
+    composerControlButton: {
+      backgroundColor: TERMINAL_BG,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      justifyContent: "center",
+      minHeight: 28,
+      paddingHorizontal: 7,
+      paddingVertical: 4,
+    },
+    composerControlButtonModel: {
+      flex: 1,
+      minWidth: 0,
+    },
+    composerControlButtonEffort: {
+      flexGrow: 0,
+      minWidth: 64,
+    },
+    composerControlButtonIcon: {
+      alignItems: "center",
+      flex: 0,
+      minWidth: 30,
+      paddingHorizontal: 0,
+    },
+    composerControlButtonSelected: {
+      backgroundColor: TERMINAL_ACCENT_SOFT,
+      borderColor: TERMINAL_ACCENT,
+    },
+    composerControlValue: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      textTransform: "uppercase",
+    },
+    composerControlValueIcon: {
+      color: TERMINAL_TEXT,
+      fontSize: 14,
+      lineHeight: 16,
+    },
+    composerControlValueIconSelected: {
+      color: TERMINAL_ACCENT,
+    },
+    composerInput: {
+      backgroundColor: TERMINAL_BG,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      minHeight: 56,
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+    },
+    composerFooter: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 6,
+      justifyContent: "space-between",
+    },
+    composerActionCluster: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 4,
+    },
+    composerRunAction: {
+      minWidth: 102,
+    },
+    gitCommitInput: {
+      minHeight: 90,
+    },
+    buttonBase: {
+      alignItems: "center",
+      backgroundColor: "transparent",
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      minHeight: 32,
+      justifyContent: "center",
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+    },
+    buttonCompact: {
+      minHeight: 28,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+    },
+    buttonPrimary: {
+      backgroundColor: TERMINAL_ACCENT_SOFT,
+      borderColor: TERMINAL_ACCENT,
+    },
+    buttonSecondary: {
+      backgroundColor: TERMINAL_PANEL_ALT,
+    },
+    buttonGhost: {
+      backgroundColor: "transparent",
+    },
+    buttonSurface: {
+      backgroundColor: TERMINAL_BG,
+    },
+    buttonDisabled: {
+      opacity: 0.42,
+    },
+    buttonLabel: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      fontWeight: "700",
+      letterSpacing: 0.4,
+    },
+    buttonLabelPrimary: {
+      color: TERMINAL_ACCENT,
+    },
+    buttonLabelSurface: {
+      color: TERMINAL_TEXT,
+    },
+    buttonLabelSecondary: {
+      color: TERMINAL_TEXT,
+    },
+    overlayRoot: {
+      ...StyleSheet.absoluteFillObject,
+    },
+    overlayRow: {
+      flex: 1,
+      flexDirection: "row",
+    },
+    overlayBackdrop: {
+      backgroundColor: TERMINAL_OVERLAY,
+      flex: 1,
+    },
+    modalBackdrop: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: TERMINAL_MODAL_OVERLAY,
+    },
+    modalCenterWrap: {
+      ...StyleSheet.absoluteFillObject,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 12,
+    },
+    overlayPanelLeft: {
+      borderRightColor: TERMINAL_BORDER,
+      borderRightWidth: 1,
+    },
+    overlayPanelRight: {
+      borderLeftColor: TERMINAL_BORDER,
+      borderLeftWidth: 1,
+    },
+    floatingPanelSafeArea: {
+      backgroundColor: TERMINAL_PANEL,
+      flex: 1,
+    },
+    floatingPanelScrollContent: {
+      gap: 10,
+      padding: 10,
+      paddingBottom: 16,
+    },
+    floatingPanelHeader: {
+      gap: 6,
+    },
+    panelEyebrow: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      letterSpacing: 1.1,
+      textTransform: "uppercase",
+    },
+    panelTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 18,
+      fontWeight: "700",
+    },
+    panelSubtitle: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 16,
+    },
+    settingsSection: {
+      backgroundColor: TERMINAL_PANEL_ALT,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      gap: 10,
+      padding: 10,
+    },
+    themeFieldGroup: {
+      gap: 10,
+    },
+    themeField: {
+      gap: 8,
+    },
+    themeFieldHeader: {
+      alignItems: "center",
+      flexDirection: "row",
+      justifyContent: "space-between",
+    },
+    themeFieldLabel: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      letterSpacing: 0.8,
+      textTransform: "uppercase",
+    },
+    themeFieldValue: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+    },
+    themeOptionGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+    },
+    themeOptionButton: {
+      backgroundColor: TERMINAL_BG,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      flexBasis: "48%",
+      flexGrow: 1,
+      gap: 6,
+      minWidth: 96,
+      padding: 8,
+    },
+    themeOptionButtonSelected: {
+      backgroundColor: TERMINAL_ACCENT_SOFT_STRONG,
+      borderColor: TERMINAL_ACCENT,
+    },
+    themeOptionSwatch: {
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      height: 18,
+    },
+    themeOptionSwatchSelected: {
+      borderColor: TERMINAL_BORDER_STRONG,
+    },
+    themeOptionLabel: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      fontWeight: "700",
+    },
+    themeOptionMeta: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+    },
+    switchRow: {
+      alignItems: "center",
+      flexDirection: "row",
+      justifyContent: "space-between",
+    },
+    selectionList: {
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+    },
+    selectionRow: {
+      alignItems: "center",
+      backgroundColor: TERMINAL_PANEL_ALT,
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+      flexDirection: "row",
+      gap: 10,
+      paddingHorizontal: 10,
+      paddingVertical: 10,
+    },
+    selectionRowCurrent: {
+      backgroundColor: TERMINAL_ACCENT_SOFT,
+      borderColor: TERMINAL_ACCENT,
+    },
+    selectionRowCopy: {
+      flex: 1,
+      gap: 3,
+    },
+    selectionRowHeading: {
+      alignItems: "center",
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+    },
+    selectionRowTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      fontWeight: "700",
+    },
+    selectionRowCurrentTag: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.8,
+      textTransform: "uppercase",
+    },
+    selectionRowMeta: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 15,
+    },
+    selectionRowReason: {
+      color: TERMINAL_DANGER,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 15,
+    },
+    selectionRowStatus: {
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.8,
+      textTransform: "uppercase",
+    },
+    selectionRowStatusReady: {
+      color: TERMINAL_ACCENT,
+    },
+    selectionRowStatusBlocked: {
+      color: TERMINAL_DANGER,
+    },
+  });
+}
+
+const stylesCache = new Map<string, ReturnType<typeof createStyles>>();
+
+function getStyles(theme: AppTheme) {
+  const cached = stylesCache.get(theme.key);
+  if (cached) {
+    return cached;
+  }
+
+  const nextStyles = createStyles(theme);
+  stylesCache.set(theme.key, nextStyles);
+  return nextStyles;
+}
+
+type AppThemeContextValue = {
+  readonly styles: ReturnType<typeof createStyles>;
+  readonly theme: AppTheme;
+};
+
+const AppThemeContext = createContext<AppThemeContextValue | null>(null);
+
+function useAppThemeContext() {
+  const context = useContext(AppThemeContext);
+  if (!context) {
+    throw new Error("App theme context is unavailable.");
+  }
+  return context;
+}

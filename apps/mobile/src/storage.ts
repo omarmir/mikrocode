@@ -1,10 +1,20 @@
 import Constants from "expo-constants";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import {
+  DEFAULT_APP_THEME_SETTINGS,
+  isAppThemeAccent,
+  isAppThemeNeutral,
+  type AppThemeAccent,
+  type AppThemeNeutral,
+} from "./theme";
+
 export interface ConnectionSettings {
   readonly serverUrl: string;
   readonly authToken: string;
   readonly autoConnect: boolean;
+  readonly themeBase: AppThemeNeutral;
+  readonly themeAccent: AppThemeAccent;
 }
 
 const STORAGE_KEY = "@t3tools/mobile/connection-settings";
@@ -13,6 +23,8 @@ export const DEFAULT_CONNECTION_SETTINGS: ConnectionSettings = {
   serverUrl: "ws://localhost:3773",
   authToken: "",
   autoConnect: true,
+  themeBase: DEFAULT_APP_THEME_SETTINGS.neutralBase,
+  themeAccent: DEFAULT_APP_THEME_SETTINGS.accent,
 };
 
 function isLoopbackServerUrl(value: string) {
@@ -73,6 +85,8 @@ export async function loadConnectionSettings(
       authToken: typeof parsed.authToken === "string" ? parsed.authToken : defaults.authToken,
       autoConnect:
         typeof parsed.autoConnect === "boolean" ? parsed.autoConnect : defaults.autoConnect,
+      themeBase: isAppThemeNeutral(parsed.themeBase) ? parsed.themeBase : defaults.themeBase,
+      themeAccent: isAppThemeAccent(parsed.themeAccent) ? parsed.themeAccent : defaults.themeAccent,
     };
   } catch {
     return defaults;
