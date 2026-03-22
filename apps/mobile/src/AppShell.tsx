@@ -2572,14 +2572,15 @@ function AppShellContent() {
               <Text style={styles.navSectionLabel}>Flow 1</Text>
               <Text style={styles.gitFlowHeading}>Current branch</Text>
               <Text style={styles.gitFlowDescription}>
-                Use the model to write a commit message and push the checked-out branch.
+                Stage all changes, let the model write the commit message, then commit and push the
+                checked-out branch.
               </Text>
               <Text style={styles.gitFlowStatus}>
                 Running on {formatGitBranchLabel(gitCurrentBranch)}
               </Text>
               <ActionButton
                 disabled={!canRunGitOperations}
-                label="Auto Commit + Push"
+                label="Stage + Auto Commit + Push"
                 onPress={() => {
                   void handleGitAutoCommitAndPush();
                 }}
@@ -2629,7 +2630,8 @@ function AppShellContent() {
               <Text style={styles.gitFlowHeading}>Create a branch</Text>
               <Text style={styles.gitFlowDescription}>
                 Start from the current branch and worktree with `checkout -b`, then either let the
-                model generate the commit message or enter one manually.
+                model generate the commit message or enter one manually. Commit actions stage all
+                changes first.
               </Text>
               <View style={styles.projectPickerInputRow}>
                 <TextInput
@@ -2658,7 +2660,7 @@ function AppShellContent() {
               <ActionButton
                 disabled={!canRunGitOperations}
                 emphasis="surface"
-                label="Auto Commit + Push"
+                label="Stage + Auto Commit + Push"
                 onPress={() => {
                   void handleGitAutoCommitAndPush();
                 }}
@@ -2679,7 +2681,7 @@ function AppShellContent() {
                 <ActionButton
                   disabled={!canRunGitOperations || !gitManualCommitMessage}
                   emphasis="surface"
-                  label="Manual Commit"
+                  label="Stage + Manual Commit"
                   onPress={() => {
                     void handleGitManualCommit();
                   }}
@@ -2687,7 +2689,7 @@ function AppShellContent() {
                 <ActionButton
                   disabled={!canRunGitOperations || !gitManualCommitMessage}
                   emphasis="surface"
-                  label="Manual Commit + Push"
+                  label="Stage + Manual Commit + Push"
                   onPress={() => {
                     void handleGitManualCommitAndPush();
                   }}
