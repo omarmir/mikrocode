@@ -4,6 +4,9 @@
     "slug": "t3code-mobile",
     "scheme": "t3code-mobile",
     "orientation": "portrait",
-    "userInterfaceStyle": "automatic"
+    "userInterfaceStyle": "automatic",
+    "android": {
+      "package": "com.anonymous.t3codemobile"
+    }
   }
 }
