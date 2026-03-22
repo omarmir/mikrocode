@@ -153,7 +153,7 @@ export function resolveAppTheme(settings: AppThemeSettings): AppTheme {
     dangerSoft: withAlpha(FLEXOKI_DARK_ACCENTS.red, 0.18),
     overlay: withAlpha(FLEXOKI_DARK_NEUTRAL_SCALE.black, 0.74),
     modalOverlay: withAlpha(FLEXOKI_DARK_NEUTRAL_SCALE.black, 0.82),
-    userMessageBackground: withAlpha(accent, 0.16),
+    userMessageBackground: withAlpha(accent, 0.3),
     userMessageBorder: accent,
     assistantMessageBackground: neutralAt(settings.neutralBase, 1),
     assistantMessageBorder: neutralAt(settings.neutralBase, 4),

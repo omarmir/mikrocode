@@ -85,6 +85,12 @@ export interface StopSessionInput {
   readonly threadId: string;
 }
 
+export interface ApprovalResponseInput {
+  readonly threadId: string;
+  readonly requestId: string;
+  readonly decision: "accept" | "acceptForSession" | "decline" | "cancel";
+}
+
 export interface DeleteThreadInput {
   readonly threadId: string;
 }

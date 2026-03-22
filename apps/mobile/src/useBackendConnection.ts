@@ -21,6 +21,7 @@ import {
   MOBILE_WS_CHANNELS,
   MOBILE_WS_METHODS,
   type ConnectionStatus,
+  type ApprovalResponseInput,
   type CreateDirectoryInput,
   type CreateProjectInput,
   type CreateThreadInput,
@@ -623,6 +624,27 @@ export function useBackendConnection() {
     );
   });
 
+  const respondToApproval = useStableEvent(async (input: ApprovalResponseInput) => {
+    const label =
+      input.decision === "accept"
+        ? "Allowing action"
+        : input.decision === "acceptForSession"
+          ? "Allowing session"
+          : input.decision === "decline"
+            ? "Declining action"
+            : "Cancelling approval";
+    await runBusyCommand(label, () =>
+      dispatchCommand(
+        withCommandMeta({
+          type: "thread.approval.respond",
+          threadId: input.threadId,
+          requestId: input.requestId,
+          decision: input.decision,
+        }),
+      ),
+    );
+  });
+
   const deleteThread = useStableEvent(async (input: DeleteThreadInput) => {
     await runBusyCommand("Removing session", () =>
       dispatchCommand(
@@ -750,6 +772,7 @@ export function useBackendConnection() {
       getConversationCapabilities(input),
     interruptTurn: (input: InterruptTurnInput) => interruptTurn(input),
     stopSession: (input: StopSessionInput) => stopSession(input),
+    respondToApproval: (input: ApprovalResponseInput) => respondToApproval(input),
     deleteThread: (input: DeleteThreadInput) => deleteThread(input),
     searchDirectory: (input: SearchDirectoryInput) => searchDirectory(input),
     createDirectory: (input: CreateDirectoryInput) => createDirectory(input),

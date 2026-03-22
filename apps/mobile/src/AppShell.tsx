@@ -44,6 +44,8 @@ import type {
   OrchestrationMessage,
   OrchestrationProject,
   OrchestrationThread,
+  OrchestrationThreadActivity,
+  ProviderApprovalDecision,
   ProjectEntry,
   ProviderReasoningEffort,
   RuntimeMode,
@@ -253,6 +255,87 @@ function getSessionTone(thread: OrchestrationThread | null) {
     return "error";
   }
   return "muted";
+}
+
+function sortActivities(activities: ReadonlyArray<OrchestrationThreadActivity>) {
+  return sortReadonlyArray(activities, (left, right) => {
+    if (
+      left.sequence !== undefined &&
+      right.sequence !== undefined &&
+      left.sequence !== right.sequence
+    ) {
+      return left.sequence - right.sequence;
+    }
+    if (left.createdAt !== right.createdAt) {
+      return left.createdAt.localeCompare(right.createdAt);
+    }
+    return left.id.localeCompare(right.id);
+  });
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function readPayloadString(payload: unknown, key: string) {
+  const record = asRecord(payload);
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function formatApprovalRequestKindLabel(kind: string | null) {
+  if (kind === "command") {
+    return "Command";
+  }
+  if (kind === "file-read") {
+    return "File read";
+  }
+  if (kind === "file-change") {
+    return "File change";
+  }
+  return "Approval";
+}
+
+type PendingApprovalRequest = {
+  readonly requestId: string;
+  readonly summary: string;
+  readonly detail: string | null;
+  readonly requestKind: string | null;
+};
+
+function findPendingApprovalRequest(
+  thread: OrchestrationThread | null,
+): PendingApprovalRequest | null {
+  if (!thread) {
+    return null;
+  }
+
+  const resolvedRequestIds = new Set<string>();
+
+  for (const activity of sortActivities(thread.activities).toReversed()) {
+    const requestId = readPayloadString(activity.payload, "requestId");
+    if (!requestId) {
+      continue;
+    }
+
+    if (activity.kind === "approval.resolved") {
+      resolvedRequestIds.add(requestId);
+      continue;
+    }
+
+    if (activity.kind !== "approval.requested" || resolvedRequestIds.has(requestId)) {
+      continue;
+    }
+
+    return {
+      requestId,
+      summary: activity.summary,
+      detail: readPayloadString(activity.payload, "detail"),
+      requestKind: readPayloadString(activity.payload, "requestKind"),
+    };
+  }
+
+  return null;
 }
 
 function ActionButton({
@@ -508,6 +591,7 @@ function AppShellContent() {
     isRefreshingSnapshot,
     lastPushSequence,
     refreshSnapshot,
+    respondToApproval,
     resolvedWebSocketUrl,
     searchDirectory,
     sendTurn,
@@ -583,6 +667,7 @@ function AppShellContent() {
   const messageMetaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesScrollRef = useRef<ScrollView | null>(null);
+  const waitingIndicatorMotion = useRef(new Animated.Value(0)).current;
 
   const allProjects = sortProjects(snapshot?.projects ?? []);
   const visibleProjectIds = new Set(allProjects.map((project) => project.id));
@@ -598,6 +683,9 @@ function AppShellContent() {
   const selectedProject = allProjects.find((project) => project.id === effectiveProjectId) ?? null;
   const selectedProjectThreads = selectedProject ? sortThreads(allThreads, selectedProject.id) : [];
   const messages = sortMessages(selectedThread?.messages ?? []);
+  const highlightedAssistantMessageId =
+    messages[messages.length - 1]?.role === "assistant" ? messages[messages.length - 1]?.id : null;
+  const pendingApprovalRequest = findPendingApprovalRequest(selectedThread);
   const selectedThreadDisplayTitle = getThreadDisplayTitle(selectedThread);
   const draft = selectedThread ? (threadDrafts[selectedThread.id] ?? "") : "";
   const isConnected = status === "connected";
@@ -760,6 +848,44 @@ function AppShellContent() {
       hideSubscription.remove();
     };
   }, [insets.bottom]);
+
+  useEffect(() => {
+    const waitingActive =
+      selectedThread !== null &&
+      (selectedThread.latestTurn?.state === "running" ||
+        selectedThread.session?.status === "running");
+
+    if (!waitingActive) {
+      waitingIndicatorMotion.stopAnimation();
+      waitingIndicatorMotion.setValue(0);
+      return;
+    }
+
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(waitingIndicatorMotion, {
+          toValue: 1,
+          duration: 360,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(waitingIndicatorMotion, {
+          toValue: 0,
+          duration: 360,
+          easing: Easing.in(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+
+    animation.start();
+
+    return () => {
+      animation.stop();
+      waitingIndicatorMotion.stopAnimation();
+      waitingIndicatorMotion.setValue(0);
+    };
+  }, [selectedThread, waitingIndicatorMotion]);
 
   const animatePanel = (
     animatedValue: Animated.Value,
@@ -1346,9 +1472,29 @@ function AppShellContent() {
     setThreadDrafts((current) => ({ ...current, [selectedThread.id]: "" }));
   };
 
+  const handleRespondToPendingApproval = async (decision: ProviderApprovalDecision) => {
+    if (!selectedThread || !pendingApprovalRequest) {
+      return;
+    }
+
+    await respondToApproval({
+      threadId: selectedThread.id,
+      requestId: pendingApprovalRequest.requestId,
+      decision,
+    });
+  };
+
   const sessionStatus = selectedThread?.session?.status ?? "idle";
   const sessionBusy =
     selectedThread?.latestTurn?.state === "running" || sessionStatus === "running";
+  const showWaitingIndicator = selectedThread !== null && sessionBusy;
+  const canRespondToPendingApproval =
+    isConnected &&
+    selectedThread !== null &&
+    pendingApprovalRequest !== null &&
+    selectedThread.session !== null &&
+    selectedThread.session.status !== "stopped" &&
+    busyAction === null;
   const canInterrupt =
     isConnected &&
     selectedThread !== null &&
@@ -1806,6 +1952,9 @@ function AppShellContent() {
                 style={[
                   styles.messageRow,
                   message.role === "user" ? styles.messageRowUser : styles.messageRowAssistant,
+                  message.role === "assistant" &&
+                    message.id === highlightedAssistantMessageId &&
+                    styles.messageRowAssistantLatest,
                 ]}
               >
                 <Text
@@ -1841,6 +1990,30 @@ function AppShellContent() {
             <Text style={styles.helperText}>Send the first instruction to open the stream.</Text>
           </View>
         )}
+
+        {showWaitingIndicator ? (
+          <Animated.View
+            style={[
+              styles.waitingIndicator,
+              {
+                opacity: waitingIndicatorMotion.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.55, 1],
+                }),
+                transform: [
+                  {
+                    translateY: waitingIndicatorMotion.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, -4],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <Text style={styles.waitingIndicatorText}>waiting</Text>
+          </Animated.View>
+        ) : null}
       </ScrollView>
 
       <View
@@ -1851,6 +2024,47 @@ function AppShellContent() {
             : null,
         ]}
       >
+        {pendingApprovalRequest ? (
+          <View style={styles.pendingApprovalPanel}>
+            <Text style={styles.pendingApprovalEyebrow}>Permission Requested</Text>
+            <Text style={styles.pendingApprovalTitle}>
+              {formatApprovalRequestKindLabel(pendingApprovalRequest.requestKind)}
+            </Text>
+            <Text style={styles.pendingApprovalSummary}>{pendingApprovalRequest.summary}</Text>
+            {pendingApprovalRequest.detail ? (
+              <Text style={styles.pendingApprovalDetail}>{pendingApprovalRequest.detail}</Text>
+            ) : null}
+            <View style={styles.inlineButtonRow}>
+              <ActionButton
+                compact
+                disabled={!canRespondToPendingApproval}
+                label="Allow"
+                onPress={() => {
+                  void handleRespondToPendingApproval("accept");
+                }}
+              />
+              <ActionButton
+                compact
+                disabled={!canRespondToPendingApproval}
+                emphasis="secondary"
+                label="Session"
+                onPress={() => {
+                  void handleRespondToPendingApproval("acceptForSession");
+                }}
+              />
+              <ActionButton
+                compact
+                disabled={!canRespondToPendingApproval}
+                emphasis="ghost"
+                label="Deny"
+                onPress={() => {
+                  void handleRespondToPendingApproval("decline");
+                }}
+              />
+            </View>
+          </View>
+        ) : null}
+
         <TextInput
           multiline
           onChangeText={updateDraft}
@@ -2568,7 +2782,7 @@ function AppShellContent() {
             style={styles.keyboardAvoider}
           >
             <View style={styles.shellLayout}>
-              <View style={styles.topBar}>
+              <View style={[styles.topBar, selectedThread ? styles.topBarConversation : null]}>
                 {!sidebarPersistent ? (
                   <IconButton accessibilityLabel="Open tree" icon="menu" onPress={openNavMenu} />
                 ) : (
@@ -2613,16 +2827,25 @@ function AppShellContent() {
                   </View>
                 ) : null}
 
-                <View style={styles.workspaceFrame}>
+                <View
+                  style={[
+                    styles.workspaceFrame,
+                    selectedThread ? styles.workspaceFrameConversation : null,
+                  ]}
+                >
                   <Animated.View
                     style={[
                       styles.workspaceSurface,
                       !selectedThread ? styles.workspaceSurfaceHome : null,
                       selectedThread ? styles.workspaceSurfaceConversation : null,
-                      {
-                        opacity: workspaceOpacity,
-                        transform: [{ translateY: workspaceTranslateY }],
-                      },
+                      selectedThread
+                        ? {
+                            opacity: workspaceOpacity,
+                          }
+                        : {
+                            opacity: workspaceOpacity,
+                            transform: [{ translateY: workspaceTranslateY }],
+                          },
                     ]}
                   >
                     {selectedThread ? renderConversation() : renderHome()}
@@ -2717,6 +2940,7 @@ function createStyles(theme: AppTheme) {
   const TERMINAL_MODAL_OVERLAY = theme.modalOverlay;
   const TERMINAL_USER_MESSAGE_BACKGROUND = theme.userMessageBackground;
   const TERMINAL_USER_MESSAGE_BORDER = theme.userMessageBorder;
+  const TERMINAL_ASSISTANT_MESSAGE_BACKGROUND = theme.assistantMessageBackground;
   const TERMINAL_ASSISTANT_MESSAGE_BORDER = theme.assistantMessageBorder;
 
   return StyleSheet.create({
@@ -3048,6 +3272,9 @@ function createStyles(theme: AppTheme) {
       flex: 1,
       gap: 4,
     },
+    workspaceFrameConversation: {
+      gap: 0,
+    },
     topBar: {
       alignItems: "center",
       backgroundColor: TERMINAL_BG,
@@ -3058,6 +3285,10 @@ function createStyles(theme: AppTheme) {
       minHeight: 34,
       paddingHorizontal: 6,
       paddingVertical: 4,
+    },
+    topBarConversation: {
+      backgroundColor: TERMINAL_PANEL,
+      borderBottomWidth: 0,
     },
     topBarSpacer: {
       width: 28,
@@ -3365,6 +3596,7 @@ function createStyles(theme: AppTheme) {
       flex: 1,
     },
     threadHeader: {
+      backgroundColor: TERMINAL_PANEL,
       padding: 0,
     },
     threadHeaderCopy: {
@@ -3480,14 +3712,21 @@ function createStyles(theme: AppTheme) {
     },
     messageRowUser: {
       backgroundColor: TERMINAL_USER_MESSAGE_BACKGROUND,
-      borderColor: TERMINAL_USER_MESSAGE_BORDER,
-      borderWidth: 1,
+      borderRightColor: TERMINAL_ACCENT,
+      borderRightWidth: 2,
       paddingHorizontal: 8,
       paddingVertical: 6,
     },
     messageRowAssistant: {
       paddingHorizontal: 0,
       paddingVertical: 2,
+    },
+    messageRowAssistantLatest: {
+      backgroundColor: TERMINAL_ASSISTANT_MESSAGE_BACKGROUND,
+      borderLeftColor: TERMINAL_ACCENT,
+      borderLeftWidth: 2,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
     },
     messageText: {
       fontFamily: TERMINAL_FONT_FAMILY,
@@ -3524,6 +3763,51 @@ function createStyles(theme: AppTheme) {
       alignItems: "flex-start",
       gap: 5,
       paddingVertical: 8,
+    },
+    pendingApprovalPanel: {
+      backgroundColor: TERMINAL_ACCENT_SOFT,
+      borderColor: TERMINAL_ACCENT,
+      borderWidth: 1,
+      gap: 5,
+      paddingHorizontal: 8,
+      paddingVertical: 8,
+    },
+    pendingApprovalEyebrow: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 1,
+      textTransform: "uppercase",
+    },
+    pendingApprovalTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      fontWeight: "700",
+    },
+    pendingApprovalSummary: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 16,
+    },
+    pendingApprovalDetail: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      lineHeight: 15,
+    },
+    waitingIndicator: {
+      alignSelf: "flex-start",
+      paddingVertical: 6,
+    },
+    waitingIndicatorText: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      letterSpacing: 0.3,
     },
     composerShell: {
       borderTopColor: TERMINAL_BORDER,
