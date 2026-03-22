@@ -110,7 +110,8 @@ function websocketRawToString(raw: unknown): string | null {
   for (const chunk of raw) {
     if (typeof chunk === "string") chunks.push(chunk);
     else if (chunk instanceof Uint8Array) chunks.push(Buffer.from(chunk).toString("utf8"));
-    else if (chunk instanceof ArrayBuffer) chunks.push(Buffer.from(new Uint8Array(chunk)).toString("utf8"));
+    else if (chunk instanceof ArrayBuffer)
+      chunks.push(Buffer.from(new Uint8Array(chunk)).toString("utf8"));
     else return null;
   }
   return chunks.join("");
@@ -263,6 +264,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return input.command as OrchestrationCommand;
     }
 
+    const threadId = input.command.threadId;
     const normalizedAttachments = yield* Effect.forEach(
       input.command.message.attachments,
       (attachment) =>
@@ -279,9 +281,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               message: `Image attachment '${attachment.name}' is empty or too large.`,
             });
           }
-          const attachmentId = createAttachmentId(input.command.threadId);
+          const attachmentId = createAttachmentId(threadId);
           if (!attachmentId) {
-            return yield* new RouteRequestError({ message: "Failed to create a safe attachment id." });
+            return yield* new RouteRequestError({
+              message: "Failed to create a safe attachment id.",
+            });
           }
           const persistedAttachment = {
             type: "image" as const,
@@ -330,7 +334,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   });
 
   const httpServer = http.createServer((req, res) => {
-    const respond = (statusCode: number, headers: Record<string, string>, body?: string | Uint8Array) => {
+    const respond = (
+      statusCode: number,
+      headers: Record<string, string>,
+      body?: string | Uint8Array,
+    ) => {
       res.writeHead(statusCode, headers);
       res.end(body);
     };
@@ -362,15 +370,23 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 relativePath: normalizedRelativePath,
               });
           if (!filePath) {
-            respond(isIdLookup ? 404 : 400, { "Content-Type": "text/plain" }, isIdLookup ? "Not Found" : "Invalid attachment path");
+            respond(
+              isIdLookup ? 404 : 400,
+              { "Content-Type": "text/plain" },
+              isIdLookup ? "Not Found" : "Invalid attachment path",
+            );
             return;
           }
-          const fileInfo = yield* fileSystem.stat(filePath).pipe(Effect.catch(() => Effect.succeed(null)));
+          const fileInfo = yield* fileSystem
+            .stat(filePath)
+            .pipe(Effect.catch(() => Effect.succeed(null)));
           if (!fileInfo || fileInfo.type !== "File") {
             respond(404, { "Content-Type": "text/plain" }, "Not Found");
             return;
           }
-          const data = yield* fileSystem.readFile(filePath).pipe(Effect.catch(() => Effect.succeed(null)));
+          const data = yield* fileSystem
+            .readFile(filePath)
+            .pipe(Effect.catch(() => Effect.succeed(null)));
           if (!data) {
             respond(404, { "Content-Type": "text/plain" }, "Not Found");
             return;
@@ -399,7 +415,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const closeWebSocketServer = Effect.callback<void, ServerLifecycleError>((resume) => {
     wss.close((error) => {
       if (error && !isServerNotRunningError(error)) {
-        resume(Effect.fail(new ServerLifecycleError({ operation: "closeWebSocketServer", cause: error })));
+        resume(
+          Effect.fail(
+            new ServerLifecycleError({ operation: "closeWebSocketServer", cause: error }),
+          ),
+        );
       } else {
         resume(Effect.void);
       }
@@ -484,7 +504,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         welcomeBootstrapThreadId = existingThread.id;
       }
     }).pipe(
-      Effect.mapError((cause) => new ServerLifecycleError({ operation: "autoBootstrapProject", cause })),
+      Effect.mapError(
+        (cause) => new ServerLifecycleError({ operation: "autoBootstrapProject", cause }),
+      ),
     );
   }
 
@@ -507,7 +529,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case ORCHESTRATION_WS_METHODS.getSnapshot:
         return yield* projectionReadModelQuery.getSnapshot();
       case ORCHESTRATION_WS_METHODS.dispatchCommand: {
-        const normalizedCommand = yield* normalizeDispatchCommand({ command: request.body.command });
+        const normalizedCommand = yield* normalizeDispatchCommand({
+          command: request.body.command,
+        });
         return yield* orchestrationEngine.dispatch(normalizedCommand);
       }
       case ORCHESTRATION_WS_METHODS.getTurnDiff:
@@ -523,14 +547,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             }),
           ),
         ).pipe(Effect.map((events) => Array.from(events)));
-      case WS_METHODS.projectsSearchEntries:
+      case WS_METHODS.projectsSearchEntries: {
+        const body = request.body;
         return yield* Effect.tryPromise({
-          try: () => searchWorkspaceEntries(stripRequestTag(request.body)),
+          try: () =>
+            searchWorkspaceEntries({
+              cwd: body.cwd,
+              query: body.query,
+              limit: body.limit,
+            }),
           catch: (cause) =>
             new RouteRequestError({
               message: `Failed to search workspace entries: ${String(cause)}`,
             }),
         });
+      }
       case WS_METHODS.projectsWriteFile: {
         const body = stripRequestTag(request.body);
         const target = yield* resolveWorkspaceWritePath({
@@ -538,14 +569,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           relativePath: body.relativePath,
           path,
         });
-        yield* fileSystem.makeDirectory(path.dirname(target.absolutePath), { recursive: true }).pipe(
-          Effect.mapError(
-            (cause) => new RouteRequestError({ message: `Failed to prepare workspace path: ${String(cause)}` }),
-          ),
-        );
+        yield* fileSystem
+          .makeDirectory(path.dirname(target.absolutePath), { recursive: true })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new RouteRequestError({
+                  message: `Failed to prepare workspace path: ${String(cause)}`,
+                }),
+            ),
+          );
         yield* fileSystem.writeFileString(target.absolutePath, body.contents).pipe(
           Effect.mapError(
-            (cause) => new RouteRequestError({ message: `Failed to write workspace file: ${String(cause)}` }),
+            (cause) =>
+              new RouteRequestError({
+                message: `Failed to write workspace file: ${String(cause)}`,
+              }),
           ),
         );
         return { relativePath: target.relativePath };
@@ -576,7 +615,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return { cwd, providers: providerStatuses };
       default: {
         const _exhaustiveCheck: never = request.body;
-        return yield* new RouteRequestError({ message: `Unknown method: ${String(_exhaustiveCheck)}` });
+        return yield* new RouteRequestError({
+          message: `Unknown method: ${String(_exhaustiveCheck)}`,
+        });
       }
     }
   });
@@ -659,16 +700,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       void runPromise(handleMessage(ws, raw).pipe(Effect.ignoreCause({ log: true })));
     });
     ws.on("close", () => {
-      void runPromise(Ref.update(clients, (clients) => {
-        clients.delete(ws);
-        return clients;
-      }));
+      void runPromise(
+        Ref.update(clients, (clients) => {
+          clients.delete(ws);
+          return clients;
+        }),
+      );
     });
     ws.on("error", () => {
-      void runPromise(Ref.update(clients, (clients) => {
-        clients.delete(ws);
-        return clients;
-      }));
+      void runPromise(
+        Ref.update(clients, (clients) => {
+          clients.delete(ws);
+          return clients;
+        }),
+      );
     });
   });
 
