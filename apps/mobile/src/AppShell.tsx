@@ -1561,7 +1561,11 @@ function AppShellContent() {
                         <View style={styles.projectCopy}>
                           <Text style={styles.projectTitle}>{project.title}</Text>
                         </View>
-                        <Text style={styles.projectCount}>{projectThreads.length}</Text>
+                        <Text
+                          style={[styles.projectCount, projectActive && styles.projectCountActive]}
+                        >
+                          {projectThreads.length}
+                        </Text>
                       </Pressable>
 
                       {projectActive ? (
@@ -1612,15 +1616,19 @@ function AppShellContent() {
                       )}
 
                       <View style={styles.projectInlineActions}>
-                        <ActionButton
-                          compact
+                        <Pressable
                           disabled={busyAction !== null}
-                          emphasis="ghost"
-                          label="New Session"
                           onPress={() => {
                             void handleCreateConversation(project);
                           }}
-                        />
+                          style={[
+                            styles.projectInlineActionButton,
+                            busyAction !== null && styles.buttonDisabled,
+                          ]}
+                        >
+                          <Feather color={theme.accent} name="plus" size={13} />
+                          <Text style={styles.projectInlineActionLabel}>New session</Text>
+                        </Pressable>
                       </View>
                     </View>
                   </View>
@@ -3040,21 +3048,27 @@ function createStyles(theme: AppTheme) {
       textTransform: "uppercase",
     },
     projectGroup: {
-      gap: 2,
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+      gap: 0,
+      paddingBottom: 6,
+      paddingTop: 4,
     },
     projectRow: {
       alignItems: "center",
       backgroundColor: "transparent",
-      borderColor: TERMINAL_BORDER,
-      borderWidth: 1,
+      borderLeftColor: "transparent",
+      borderLeftWidth: 2,
       flexDirection: "row",
-      gap: 10,
-      paddingHorizontal: 9,
-      paddingVertical: 8,
+      gap: 8,
+      minHeight: 34,
+      paddingLeft: 8,
+      paddingRight: 2,
+      paddingVertical: 5,
     },
     projectRowActive: {
       backgroundColor: TERMINAL_PANEL_ALT,
-      borderColor: TERMINAL_ACCENT,
+      borderLeftColor: TERMINAL_ACCENT,
     },
     projectCopy: {
       flex: 1,
@@ -3072,22 +3086,43 @@ function createStyles(theme: AppTheme) {
       fontWeight: "700",
     },
     projectCount: {
-      color: TERMINAL_ACCENT,
+      color: TERMINAL_MUTED,
       fontFamily: TERMINAL_FONT_FAMILY,
-      fontSize: 11,
+      fontSize: 10,
       fontWeight: "700",
+      minWidth: 18,
+      textAlign: "right",
+    },
+    projectCountActive: {
+      color: TERMINAL_ACCENT,
     },
     projectInlineActions: {
       alignItems: "center",
       flexDirection: "row",
-      gap: 8,
+      gap: 4,
+      paddingLeft: 12,
+      paddingTop: 2,
     },
     projectHeaderDestructiveAction: {
-      borderLeftColor: TERMINAL_BORDER,
-      borderLeftWidth: 1,
-      marginLeft: 2,
-      paddingLeft: 8,
+      marginLeft: 4,
+      paddingHorizontal: 6,
       paddingVertical: 4,
+    },
+    projectInlineActionButton: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 6,
+      minHeight: 24,
+      paddingHorizontal: 1,
+      paddingVertical: 2,
+    },
+    projectInlineActionLabel: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      letterSpacing: 0.3,
+      textTransform: "uppercase",
     },
     inlineDestructiveActionLabel: {
       color: TERMINAL_DANGER,
@@ -3098,17 +3133,19 @@ function createStyles(theme: AppTheme) {
       textTransform: "uppercase",
     },
     threadGroup: {
-      gap: 1,
+      gap: 0,
       paddingLeft: 12,
+      paddingTop: 2,
     },
     threadRow: {
       alignItems: "center",
-      borderLeftColor: TERMINAL_BORDER,
-      borderLeftWidth: 1,
+      borderLeftColor: "transparent",
+      borderLeftWidth: 2,
       flexDirection: "row",
       gap: 8,
+      minHeight: 30,
       paddingHorizontal: 8,
-      paddingVertical: 6,
+      paddingVertical: 5,
     },
     threadRowActive: {
       backgroundColor: TERMINAL_ACCENT_SOFT,
@@ -3138,6 +3175,8 @@ function createStyles(theme: AppTheme) {
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 11,
       lineHeight: 14,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
     },
     emptyProjectsCopy: {
       color: TERMINAL_MUTED,
