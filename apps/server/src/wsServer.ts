@@ -50,7 +50,7 @@ import { searchWorkspaceEntries } from "./workspaceEntries";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor";
-import { ProviderService } from "./provider/Services/ProviderService";
+import type { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { ServerConfig } from "./config";
@@ -68,6 +68,7 @@ import {
 import { parseBase64DataUrl } from "./imageMime.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { expandHomePath } from "./os-jank.ts";
+import { buildServerConversationCapabilities } from "./serverConversationCapabilities.ts";
 import { makeServerPushBus } from "./wsServer/pushBus.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
@@ -163,6 +164,15 @@ function stripRequestTag<T extends { _tag: string }>(body: T) {
   return Struct.omit(body, ["_tag"]);
 }
 
+function extractRequestIdForDecodeFailure(messageText: string): string {
+  try {
+    const parsed = JSON.parse(messageText) as { id?: unknown };
+    return typeof parsed?.id === "string" && parsed.id.trim().length > 0 ? parsed.id : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 const encodeWsResponse = Schema.encodeEffect(Schema.fromJsonString(WsResponse));
 const decodeWebSocketRequest = decodeJsonResult(WebSocketRequest);
 
@@ -210,8 +220,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const clients = yield* Ref.make(new Set<WebSocket>());
   const logger = createLogger("ws");
   const readiness = yield* makeServerReadiness;
-  const providerStatuses = yield* providerHealth.getStatuses;
-
   function logOutgoingPush(push: WsPushEnvelopeBase, recipients: number) {
     if (!logWebSocketEvents) return;
     logger.event("outgoing push", {
@@ -629,7 +637,24 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.gitInit:
         return yield* git.initRepo(stripRequestTag(request.body));
       case WS_METHODS.serverGetConfig:
-        return { cwd, providers: providerStatuses };
+        return { cwd, providers: yield* providerHealth.getStatuses };
+      case WS_METHODS.serverGetConversationCapabilities: {
+        const body = stripRequestTag(request.body);
+        const snapshot = yield* projectionReadModelQuery.getSnapshot();
+        const thread = snapshot.threads.find(
+          (entry) => entry.id === body.threadId && entry.deletedAt === null,
+        );
+        if (!thread) {
+          return yield* new RouteRequestError({
+            message: `Thread '${body.threadId}' was not found.`,
+          });
+        }
+
+        return buildServerConversationCapabilities({
+          thread,
+          providerStatuses: yield* providerHealth.getStatuses,
+        });
+      }
       default: {
         const _exhaustiveCheck: never = request.body;
         return yield* new RouteRequestError({
@@ -657,7 +682,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     const request = decodeWebSocketRequest(messageText);
     if (Result.isFailure(request)) {
       return yield* sendWsResponse({
-        id: "unknown",
+        id: extractRequestIdForDecodeFailure(messageText),
         error: { message: `Invalid request format: ${formatSchemaError(request.failure)}` },
       });
     }

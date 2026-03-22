@@ -18,13 +18,14 @@ import type {
   GitStatusInput,
   GitStatusResult,
 } from "./git";
+import type { ThreadId } from "./baseSchemas";
 import type {
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
   ProjectWriteFileInput,
   ProjectWriteFileResult,
 } from "./project";
-import type { ServerConfig } from "./server";
+import type { ServerConfig, ServerConversationCapabilities } from "./server";
 import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
@@ -60,6 +61,7 @@ export interface NativeApi {
   };
   server: {
     getConfig: () => Promise<ServerConfig>;
+    getConversationCapabilities: (threadId: ThreadId) => Promise<ServerConversationCapabilities>;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;

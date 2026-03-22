@@ -29,7 +29,12 @@ try {
 
   execFileSync(
     process.execPath,
-    [resolve(repoRoot, "scripts/update-release-package-versions.ts"), "9.9.9-smoke.0", "--root", tempRoot],
+    [
+      resolve(repoRoot, "scripts/update-release-package-versions.ts"),
+      "9.9.9-smoke.0",
+      "--root",
+      tempRoot,
+    ],
     { cwd: repoRoot, stdio: "inherit" },
   );
 

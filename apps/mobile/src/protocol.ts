@@ -4,6 +4,7 @@ import type {
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig,
+  ServerConversationCapabilities,
   WsWelcomePayload,
 } from "@t3tools/contracts";
 
@@ -13,6 +14,7 @@ export const MOBILE_WS_METHODS = {
   projectsCreateDirectory: "projects.createDirectory",
   projectsSearchEntries: "projects.searchEntries",
   serverGetConfig: "server.getConfig",
+  serverGetConversationCapabilities: "server.getConversationCapabilities",
 } as const;
 
 export const MOBILE_WS_CHANNELS = {
@@ -76,11 +78,17 @@ export interface CreateDirectoryInput {
   readonly relativePath: string;
 }
 
+export interface GetConversationCapabilitiesInput {
+  readonly threadId: string;
+}
+
 export interface MobileBackendState {
   readonly snapshot: OrchestrationReadModel | null;
   readonly serverConfig: ServerConfig | null;
   readonly welcome: WsWelcomePayload | null;
 }
+
+export type ConversationCapabilities = ServerConversationCapabilities;
 
 export interface DirectoryListing {
   readonly cwd: string;

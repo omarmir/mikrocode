@@ -1,6 +1,6 @@
 import { Schema } from "effect";
-import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
-import { ProviderKind } from "./orchestration";
+import { IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
+import { ProviderKind, RuntimeMode } from "./orchestration";
 
 export const ServerProviderStatusState = Schema.Literals(["ready", "warning", "error"]);
 export type ServerProviderStatusState = typeof ServerProviderStatusState.Type;
@@ -24,6 +24,42 @@ export type ServerProviderStatus = typeof ServerProviderStatus.Type;
 
 export const ServerProviderStatuses = Schema.Array(ServerProviderStatus);
 export type ServerProviderStatuses = typeof ServerProviderStatuses.Type;
+
+export const ServerConversationModelSwitchMode = Schema.Literals([
+  "in-session",
+  "restart-session",
+  "unsupported",
+]);
+export type ServerConversationModelSwitchMode = typeof ServerConversationModelSwitchMode.Type;
+
+export const ServerConversationModelOption = Schema.Struct({
+  slug: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  available: Schema.Boolean,
+  reason: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerConversationModelOption = typeof ServerConversationModelOption.Type;
+
+export const ServerConversationRuntimeModeOption = Schema.Struct({
+  mode: RuntimeMode,
+  granted: Schema.Boolean,
+  reason: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerConversationRuntimeModeOption = typeof ServerConversationRuntimeModeOption.Type;
+
+export const ServerConversationCapabilitiesInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type ServerConversationCapabilitiesInput = typeof ServerConversationCapabilitiesInput.Type;
+
+export const ServerConversationCapabilities = Schema.Struct({
+  threadId: ThreadId,
+  provider: ProviderKind,
+  modelSwitch: ServerConversationModelSwitchMode,
+  models: Schema.Array(ServerConversationModelOption),
+  runtimeModes: Schema.Array(ServerConversationRuntimeModeOption),
+});
+export type ServerConversationCapabilities = typeof ServerConversationCapabilities.Type;
 
 export const ServerConfig = Schema.Struct({
   cwd: TrimmedNonEmptyString,

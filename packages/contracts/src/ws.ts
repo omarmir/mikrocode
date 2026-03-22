@@ -28,7 +28,7 @@ import {
   ProjectSearchEntriesInput,
   ProjectWriteFileInput,
 } from "./project";
-import { ServerConfigUpdatedPayload } from "./server";
+import { ServerConfigUpdatedPayload, ServerConversationCapabilitiesInput } from "./server";
 
 export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
@@ -46,6 +46,7 @@ export const WS_METHODS = {
   gitResolvePullRequest: "git.resolvePullRequest",
   gitPreparePullRequestThread: "git.preparePullRequestThread",
   serverGetConfig: "server.getConfig",
+  serverGetConversationCapabilities: "server.getConversationCapabilities",
 } as const;
 
 export const WS_CHANNELS = {
@@ -85,6 +86,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.gitResolvePullRequest, GitPullRequestRefInput),
   tagRequestBody(WS_METHODS.gitPreparePullRequestThread, GitPreparePullRequestThreadInput),
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.serverGetConversationCapabilities, ServerConversationCapabilitiesInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({

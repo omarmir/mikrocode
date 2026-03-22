@@ -6,6 +6,7 @@ import type {
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig,
+  ServerConversationCapabilities,
   WsWelcomePayload,
 } from "@t3tools/contracts";
 
@@ -19,6 +20,7 @@ import {
   type CreateDirectoryInput,
   type CreateProjectInput,
   type CreateThreadInput,
+  type GetConversationCapabilitiesInput,
   type DirectoryListing,
   type InterruptTurnInput,
   type PushMessage,
@@ -27,6 +29,7 @@ import {
   type SendTurnInput,
   type StopSessionInput,
 } from "./protocol";
+import { MOBILE_DEFAULT_MODEL } from "./defaults";
 import {
   getDefaultConnectionSettings,
   loadConnectionSettings,
@@ -452,7 +455,7 @@ export function useBackendConnection() {
           projectId: createClientId("project"),
           title: welcome.projectName,
           workspaceRoot: welcome.cwd,
-          defaultModel: "gpt-5-codex",
+          defaultModel: MOBILE_DEFAULT_MODEL,
         }),
       ),
     );
@@ -474,6 +477,17 @@ export function useBackendConnection() {
     );
 
     return projectId;
+  });
+
+  const deleteProject = useStableEvent(async (projectId: string) => {
+    await runBusyCommand("Removing project", () =>
+      dispatchCommand(
+        withCommandMeta({
+          type: "project.delete",
+          projectId,
+        }),
+      ),
+    );
   });
 
   const createThread = useStableEvent(async (input: CreateThreadInput) => {
@@ -517,6 +531,52 @@ export function useBackendConnection() {
       ),
     );
   });
+
+  const updateThreadModel = useStableEvent(async (input: { threadId: string; model: string }) => {
+    await runBusyCommand("Switching model", () =>
+      dispatchCommand(
+        withCommandMeta({
+          type: "thread.meta.update",
+          threadId: input.threadId,
+          model: input.model.trim(),
+        }),
+      ),
+    );
+  });
+
+  const updateThreadRuntimeMode = useStableEvent(
+    async (input: { threadId: string; runtimeMode: RuntimeMode }) => {
+      await runBusyCommand("Updating access", () =>
+        dispatchCommand(
+          withCommandMeta({
+            type: "thread.runtime-mode.set",
+            threadId: input.threadId,
+            runtimeMode: input.runtimeMode,
+          }),
+        ),
+      );
+    },
+  );
+
+  const getConversationCapabilities = useStableEvent(
+    async (input: GetConversationCapabilitiesInput): Promise<ServerConversationCapabilities> => {
+      try {
+        return await request<ServerConversationCapabilities>(
+          MOBILE_WS_METHODS.serverGetConversationCapabilities,
+          {
+            threadId: input.threadId,
+          },
+        );
+      } catch (error) {
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : "Failed to load conversation capabilities from the backend.",
+        );
+        throw error;
+      }
+    },
+  );
 
   const interruptTurn = useStableEvent(async (input: InterruptTurnInput) => {
     await runBusyCommand("Interrupting turn", () =>
@@ -590,8 +650,14 @@ export function useBackendConnection() {
     refreshSnapshot: () => refreshSnapshot(),
     createProjectFromWelcome: () => createProjectFromWelcome(),
     createProject: (input: CreateProjectInput) => createProject(input),
+    deleteProject: (projectId: string) => deleteProject(projectId),
     createThread: (input: CreateThreadInput) => createThread(input),
     sendTurn: (input: SendTurnInput) => sendTurn(input),
+    updateThreadModel: (input: { threadId: string; model: string }) => updateThreadModel(input),
+    updateThreadRuntimeMode: (input: { threadId: string; runtimeMode: RuntimeMode }) =>
+      updateThreadRuntimeMode(input),
+    getConversationCapabilities: (input: GetConversationCapabilitiesInput) =>
+      getConversationCapabilities(input),
     interruptTurn: (input: InterruptTurnInput) => interruptTurn(input),
     stopSession: (input: StopSessionInput) => stopSession(input),
     searchDirectory: (input: SearchDirectoryInput) => searchDirectory(input),
