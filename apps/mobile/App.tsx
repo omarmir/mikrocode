@@ -47,21 +47,21 @@ function formatRelativeTime(timestamp: string) {
 function sortProjects(projects: ReadonlyArray<OrchestrationProject>) {
   return [...projects]
     .filter((project) => project.deletedAt === null)
-    .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
 function sortThreads(threads: ReadonlyArray<OrchestrationThread>, projectId: string | null) {
   return [...threads]
     .filter((thread) => thread.deletedAt === null && thread.projectId === projectId)
-    .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
 function sortMessages(messages: ReadonlyArray<OrchestrationMessage>) {
-  return [...messages].toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+  return [...messages].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
 function sortActivities(activities: ReadonlyArray<OrchestrationThreadActivity>) {
-  return [...activities].toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
+  return [...activities].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 function createThreadTitle(input: string) {
@@ -478,7 +478,7 @@ function AppShell() {
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                   <View style={styles.threadRail}>
                     {threads.map((thread) => {
-                      const lastMessage = [...thread.messages].toSorted((left, right) =>
+                      const lastMessage = [...thread.messages].sort((left, right) =>
                         right.createdAt.localeCompare(left.createdAt),
                       )[0];
                       const preview =
