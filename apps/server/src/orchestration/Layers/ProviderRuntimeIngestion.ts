@@ -38,6 +38,7 @@ const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
+const MAX_ACTIVITY_DELTA_CHARS = 12_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
 type TurnStartRequestedDomainEvent = Extract<
@@ -72,6 +73,36 @@ function sameId(left: string | null | undefined, right: string | null | undefine
 
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
+}
+
+function truncateActivityDelta(value: string) {
+  if (value.length <= MAX_ACTIVITY_DELTA_CHARS) {
+    return { delta: value, truncated: false } as const;
+  }
+
+  return {
+    delta: `${value.slice(0, MAX_ACTIVITY_DELTA_CHARS - 15)}\n...[truncated]`,
+    truncated: true,
+  } as const;
+}
+
+function contentDeltaActivitySummary(
+  streamKind: string,
+): "Reasoning" | "Reasoning summary" | "Plan draft" | "Command output" | "File change" | null {
+  switch (streamKind) {
+    case "reasoning_text":
+      return "Reasoning";
+    case "reasoning_summary_text":
+      return "Reasoning summary";
+    case "plan_text":
+      return "Plan draft";
+    case "command_output":
+      return "Command output";
+    case "file_change_output":
+      return "File change";
+    default:
+      return null;
+  }
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
@@ -419,6 +450,46 @@ function runtimeEventToActivities(
           summary: "Context usage updated",
           payload: {
             usage: event.payload.usage,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "content.delta": {
+      if (event.payload.streamKind === "assistant_text") {
+        return [];
+      }
+
+      const summary = contentDeltaActivitySummary(event.payload.streamKind);
+      if (!summary) {
+        return [];
+      }
+
+      const { delta, truncated } = truncateActivityDelta(event.payload.delta);
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone:
+            event.payload.streamKind === "command_output" ||
+            event.payload.streamKind === "file_change_output"
+              ? "tool"
+              : "info",
+          kind: "content.delta",
+          summary,
+          payload: {
+            streamKind: event.payload.streamKind,
+            delta,
+            ...(truncated ? { truncated: true } : {}),
+            ...(event.itemId ? { itemId: event.itemId } : {}),
+            ...(event.payload.contentIndex !== undefined
+              ? { contentIndex: event.payload.contentIndex }
+              : {}),
+            ...(event.payload.summaryIndex !== undefined
+              ? { summaryIndex: event.payload.summaryIndex }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

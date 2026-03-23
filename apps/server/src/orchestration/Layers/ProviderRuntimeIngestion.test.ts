@@ -1898,6 +1898,98 @@ describe("ProviderRuntimeIngestion", () => {
     expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated");
   });
 
+  it("projects non-assistant content deltas into inline thread activities", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const later = new Date(Date.now() + 10).toISOString();
+    const latest = new Date(Date.now() + 20).toISOString();
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-command-output"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-inline"),
+      itemId: asItemId("item-command"),
+      payload: {
+        streamKind: "command_output",
+        delta: "bun fmt\n",
+      },
+    });
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-file-change-output"),
+      provider: "codex",
+      createdAt: later,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-inline"),
+      itemId: asItemId("item-file-change"),
+      payload: {
+        streamKind: "file_change_output",
+        delta: "*** Update File: src/app.tsx\n+const ready = true;\n",
+      },
+    });
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-assistant-inline"),
+      provider: "codex",
+      createdAt: latest,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-inline"),
+      itemId: asItemId("item-assistant"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "assistant reply",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) => activity.id === "evt-command-output",
+        ) &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) => activity.id === "evt-file-change-output",
+        ),
+    );
+
+    const commandOutput = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-command-output",
+    );
+    const commandOutputPayload =
+      commandOutput?.payload && typeof commandOutput.payload === "object"
+        ? (commandOutput.payload as Record<string, unknown>)
+        : undefined;
+    expect(commandOutput?.kind).toBe("content.delta");
+    expect(commandOutput?.tone).toBe("tool");
+    expect(commandOutputPayload?.streamKind).toBe("command_output");
+    expect(commandOutputPayload?.delta).toBe("bun fmt\n");
+
+    const fileChangeOutput = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-file-change-output",
+    );
+    const fileChangeOutputPayload =
+      fileChangeOutput?.payload && typeof fileChangeOutput.payload === "object"
+        ? (fileChangeOutput.payload as Record<string, unknown>)
+        : undefined;
+    expect(fileChangeOutput?.kind).toBe("content.delta");
+    expect(fileChangeOutput?.tone).toBe("tool");
+    expect(fileChangeOutputPayload?.streamKind).toBe("file_change_output");
+    expect(fileChangeOutputPayload?.delta).toBe(
+      "*** Update File: src/app.tsx\n+const ready = true;\n",
+    );
+
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-assistant-inline",
+      ),
+    ).toBe(false);
+  });
+
   it("projects Codex task lifecycle chunks into thread activities", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

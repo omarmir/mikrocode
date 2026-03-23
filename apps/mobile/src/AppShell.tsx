@@ -792,6 +792,32 @@ type PendingUserInputRequest = {
 
 type PendingUserInputSelectionState = Record<string, Record<string, string | string[]>>;
 type PendingUserInputOtherState = Record<string, Record<string, string>>;
+type ThreadTimelineMessageEntry = {
+  readonly kind: "message";
+  readonly id: string;
+  readonly createdAt: string;
+  readonly message: OrchestrationMessage;
+};
+type ThreadTimelineActivityGroupEntry = {
+  readonly kind: "activityGroup";
+  readonly id: string;
+  readonly createdAt: string;
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+};
+type ThreadTimelineEntry = ThreadTimelineMessageEntry | ThreadTimelineActivityGroupEntry;
+
+const INLINE_ACTIVITY_KINDS = new Set([
+  "content.delta",
+  "runtime.warning",
+  "runtime.error",
+  "turn.plan.updated",
+  "task.started",
+  "task.progress",
+  "task.completed",
+  "tool.started",
+  "tool.updated",
+  "tool.completed",
+]);
 
 function readPayloadBoolean(payload: unknown, key: string) {
   const record = asRecord(payload);
@@ -847,6 +873,411 @@ function readPayloadQuestions(payload: unknown): ReadonlyArray<UserInputQuestion
       } satisfies UserInputQuestion,
     ];
   });
+}
+
+function shouldRenderInlineActivity(activity: OrchestrationThreadActivity) {
+  return INLINE_ACTIVITY_KINDS.has(activity.kind);
+}
+
+function timelineMessagePriority(message: OrchestrationMessage) {
+  switch (message.role) {
+    case "user":
+      return 0;
+    case "assistant":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+function compareInlineActivities(
+  left: OrchestrationThreadActivity,
+  right: OrchestrationThreadActivity,
+) {
+  if (
+    left.sequence !== undefined &&
+    right.sequence !== undefined &&
+    left.sequence !== right.sequence
+  ) {
+    return left.sequence - right.sequence;
+  }
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt.localeCompare(right.createdAt);
+  }
+  return left.id.localeCompare(right.id);
+}
+
+function buildThreadTimelineEntries(
+  messages: ReadonlyArray<OrchestrationMessage>,
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyArray<ThreadTimelineEntry> {
+  const merged = sortReadonlyArray(
+    [
+      ...messages.map((message) => ({ kind: "message" as const, message })),
+      ...activities
+        .filter((activity) => shouldRenderInlineActivity(activity))
+        .map((activity) => ({ kind: "activity" as const, activity })),
+    ],
+    (left, right) => {
+      if (left.kind === "activity" && right.kind === "activity") {
+        return compareInlineActivities(left.activity, right.activity);
+      }
+
+      const leftCreatedAt =
+        left.kind === "message" ? left.message.createdAt : left.activity.createdAt;
+      const rightCreatedAt =
+        right.kind === "message" ? right.message.createdAt : right.activity.createdAt;
+      if (leftCreatedAt !== rightCreatedAt) {
+        return leftCreatedAt.localeCompare(rightCreatedAt);
+      }
+
+      const leftPriority = left.kind === "message" ? timelineMessagePriority(left.message) : 1;
+      const rightPriority = right.kind === "message" ? timelineMessagePriority(right.message) : 1;
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+
+      const leftId = left.kind === "message" ? left.message.id : left.activity.id;
+      const rightId = right.kind === "message" ? right.message.id : right.activity.id;
+      return leftId.localeCompare(rightId);
+    },
+  );
+
+  const timeline: ThreadTimelineEntry[] = [];
+  let bufferedActivities: OrchestrationThreadActivity[] = [];
+
+  const flushBufferedActivities = () => {
+    const firstActivity = bufferedActivities[0];
+    const lastActivity = bufferedActivities[bufferedActivities.length - 1];
+    if (!firstActivity || !lastActivity) {
+      bufferedActivities = [];
+      return;
+    }
+
+    timeline.push({
+      kind: "activityGroup",
+      id: `activity-group:${firstActivity.id}:${lastActivity.id}`,
+      createdAt: firstActivity.createdAt,
+      activities: bufferedActivities,
+    });
+    bufferedActivities = [];
+  };
+
+  for (const entry of merged) {
+    if (entry.kind === "activity") {
+      bufferedActivities = [...bufferedActivities, entry.activity];
+      continue;
+    }
+
+    flushBufferedActivities();
+    timeline.push({
+      kind: "message",
+      id: entry.message.id,
+      createdAt: entry.message.createdAt,
+      message: entry.message,
+    });
+  }
+
+  flushBufferedActivities();
+  return timeline;
+}
+
+function summarizePreviewText(value: string, limit = 140) {
+  const firstNonEmptyLine = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!firstNonEmptyLine) {
+    return null;
+  }
+  const compact = firstNonEmptyLine.replace(/\s+/g, " ");
+  return compact.length > limit ? `${compact.slice(0, limit - 3)}...` : compact;
+}
+
+function readPlanStepLines(payload: unknown) {
+  const payloadRecord = asRecord(payload);
+  const plan = Array.isArray(payloadRecord?.plan) ? payloadRecord.plan : [];
+  return plan.flatMap((entry) => {
+    const stepRecord = asRecord(entry);
+    const step =
+      typeof stepRecord?.step === "string" && stepRecord.step.trim()
+        ? stepRecord.step.trim()
+        : null;
+    if (!step) {
+      return [];
+    }
+
+    const status =
+      typeof stepRecord?.status === "string" && stepRecord.status.trim()
+        ? stepRecord.status.trim()
+        : "pending";
+    const statusLabel =
+      status === "inProgress" || status === "in_progress"
+        ? "in progress"
+        : status === "completed"
+          ? "completed"
+          : "pending";
+    return [`[${statusLabel}] ${step}`];
+  });
+}
+
+function activityPreviewText(activity: OrchestrationThreadActivity) {
+  const delta = readPayloadString(activity.payload, "delta");
+  if (delta) {
+    return summarizePreviewText(delta);
+  }
+
+  const detail =
+    readPayloadString(activity.payload, "detail") ??
+    readPayloadString(activity.payload, "message") ??
+    readPayloadString(activity.payload, "explanation");
+  if (detail) {
+    return summarizePreviewText(detail);
+  }
+
+  if (activity.kind === "turn.plan.updated") {
+    return summarizePreviewText(readPlanStepLines(activity.payload).join(" / "));
+  }
+
+  return null;
+}
+
+function activityGroupTitle(activities: ReadonlyArray<OrchestrationThreadActivity>) {
+  const lastActivity = activities[activities.length - 1];
+  if (!lastActivity) {
+    return "Runtime updates";
+  }
+  return activities.length === 1 ? lastActivity.summary : `${activities.length} runtime updates`;
+}
+
+function activityGroupPreview(activities: ReadonlyArray<OrchestrationThreadActivity>) {
+  for (const activity of activities.toReversed()) {
+    const preview = activityPreviewText(activity);
+    if (preview) {
+      return preview;
+    }
+  }
+
+  const summaries = Array.from(new Set(activities.map((activity) => activity.summary)));
+  if (summaries.length === 0) {
+    return null;
+  }
+
+  return summaries.slice(Math.max(0, summaries.length - 3)).join(" / ");
+}
+
+function activityIcon(activity: OrchestrationThreadActivity): FeatherIconName {
+  const streamKind = readPayloadString(activity.payload, "streamKind");
+  if (streamKind === "file_change_output") {
+    return "edit-3";
+  }
+  if (streamKind === "command_output") {
+    return "terminal";
+  }
+  if (streamKind === "reasoning_text" || streamKind === "reasoning_summary_text") {
+    return "cpu";
+  }
+  if (streamKind === "plan_text" || activity.kind === "turn.plan.updated") {
+    return "list";
+  }
+  if (activity.kind === "runtime.warning" || activity.kind === "runtime.error") {
+    return "alert-triangle";
+  }
+  if (activity.kind.startsWith("tool.")) {
+    return "tool";
+  }
+  if (activity.kind.startsWith("task.")) {
+    return "activity";
+  }
+  return "activity";
+}
+
+function activityEyebrow(activity: OrchestrationThreadActivity) {
+  const streamKind = readPayloadString(activity.payload, "streamKind");
+  switch (streamKind) {
+    case "file_change_output":
+      return "Edit";
+    case "command_output":
+      return "Command";
+    case "reasoning_text":
+      return "Reasoning";
+    case "reasoning_summary_text":
+      return "Summary";
+    case "plan_text":
+      return "Plan";
+    default:
+      break;
+  }
+
+  if (activity.kind.startsWith("tool.")) {
+    return "Tool";
+  }
+  if (activity.kind.startsWith("task.")) {
+    return "Task";
+  }
+  if (activity.kind === "runtime.warning") {
+    return "Warning";
+  }
+  if (activity.kind === "runtime.error") {
+    return "Error";
+  }
+  if (activity.kind === "turn.plan.updated") {
+    return "Plan";
+  }
+  return "Activity";
+}
+
+function activityBody(activity: OrchestrationThreadActivity): {
+  readonly kind: "code" | "text";
+  readonly language: string | null;
+  readonly value: string;
+} | null {
+  const streamKind = readPayloadString(activity.payload, "streamKind");
+  const delta = readPayloadString(activity.payload, "delta");
+  if (delta) {
+    return {
+      kind:
+        streamKind === "file_change_output" || streamKind === "command_output" ? "code" : "text",
+      language:
+        streamKind === "file_change_output"
+          ? "diff"
+          : streamKind === "command_output"
+            ? "bash"
+            : null,
+      value: delta,
+    };
+  }
+
+  if (activity.kind === "turn.plan.updated") {
+    const lines: string[] = [];
+    const explanation = readPayloadString(activity.payload, "explanation");
+    if (explanation) {
+      lines.push(explanation);
+    }
+
+    const planLines = readPlanStepLines(activity.payload);
+    if (planLines.length > 0) {
+      if (lines.length > 0) {
+        lines.push("");
+      }
+      lines.push(...planLines);
+    }
+
+    if (lines.length > 0) {
+      return {
+        kind: "text",
+        language: null,
+        value: lines.join("\n"),
+      };
+    }
+  }
+
+  const detail =
+    readPayloadString(activity.payload, "detail") ?? readPayloadString(activity.payload, "message");
+  if (!detail) {
+    return null;
+  }
+
+  return {
+    kind: "text",
+    language: null,
+    value: detail,
+  };
+}
+
+function TimelineCodeBlock({
+  language,
+  value,
+}: {
+  readonly language: string | null;
+  readonly value: string;
+}) {
+  const { styles } = useAppThemeContext();
+  return (
+    <View style={styles.timelineActivityCodeBlock}>
+      <View style={styles.timelineActivityCodeHeader}>
+        <Text style={styles.timelineActivityCodeHeaderLabel}>{language ?? "text"}</Text>
+      </View>
+      <ScrollView
+        horizontal
+        style={styles.timelineActivityCodeScroll}
+        contentContainerStyle={styles.timelineActivityCodeScrollContent}
+      >
+        <Text selectable style={styles.timelineActivityCodeText}>
+          {value}
+        </Text>
+      </ScrollView>
+    </View>
+  );
+}
+
+function TimelineActivityGroup({
+  activities,
+  expanded,
+  onToggle,
+}: {
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
+}) {
+  const { styles, theme } = useAppThemeContext();
+  const latestActivity = activities[activities.length - 1];
+  if (!latestActivity) {
+    return null;
+  }
+
+  const preview = activityGroupPreview(activities);
+  return (
+    <View style={styles.timelineActivityWrap}>
+      <Pressable onPress={onToggle} style={styles.timelineActivitySummaryRow}>
+        <View style={styles.timelineActivitySummaryHeader}>
+          <Feather
+            color={theme.muted}
+            name={expanded ? "chevron-down" : "chevron-right"}
+            size={14}
+          />
+          <Feather color={theme.accent} name={activityIcon(latestActivity)} size={14} />
+          <Text style={styles.timelineActivitySummaryTitle}>{activityGroupTitle(activities)}</Text>
+        </View>
+        <Text style={styles.timelineActivitySummaryMeta}>
+          {formatTimestamp(latestActivity.createdAt)}
+        </Text>
+      </Pressable>
+      {preview ? <Text style={styles.timelineActivitySummaryPreview}>{preview}</Text> : null}
+      {expanded ? (
+        <View style={styles.timelineActivityExpandedList}>
+          {activities.map((activity) => {
+            const body = activityBody(activity);
+            return (
+              <View key={activity.id} style={styles.timelineActivityExpandedItem}>
+                <View style={styles.timelineActivityExpandedHeader}>
+                  <Text style={styles.timelineActivityExpandedEyebrow}>
+                    {activityEyebrow(activity)}
+                  </Text>
+                  <Text style={styles.timelineActivityExpandedTimestamp}>
+                    {formatTimestamp(activity.createdAt)}
+                  </Text>
+                </View>
+                <Text style={styles.timelineActivityExpandedTitle}>{activity.summary}</Text>
+                {body ? (
+                  body.kind === "code" ? (
+                    <TimelineCodeBlock language={body.language} value={body.value} />
+                  ) : (
+                    <Text selectable style={styles.timelineActivityExpandedText}>
+                      {body.value}
+                    </Text>
+                  )
+                ) : null}
+                {readPayloadBoolean(activity.payload, "truncated") ? (
+                  <Text style={styles.timelineActivityExpandedHint}>Stored chunk truncated.</Text>
+                ) : null}
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
+    </View>
+  );
 }
 
 function findPendingApprovalRequest(
@@ -1421,6 +1852,9 @@ function AppShellContent() {
   const [pendingUserInputOtherDrafts, setPendingUserInputOtherDrafts] =
     useState<PendingUserInputOtherState>({});
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const [expandedActivityGroupIds, setExpandedActivityGroupIds] = useState<Record<string, true>>(
+    {},
+  );
   const [revealedMessageId, setRevealedMessageId] = useState<string | null>(null);
   const [projectBuilderOpen, setProjectBuilderOpen] = useState(false);
   const [projectBuilderRoot, setProjectBuilderRoot] = useState<string | null>(null);
@@ -1472,6 +1906,10 @@ function AppShellContent() {
   const selectedProject = allProjects.find((project) => project.id === effectiveProjectId) ?? null;
   const selectedProjectThreads = selectedProject ? sortThreads(allThreads, selectedProject.id) : [];
   const messages = sortMessages(selectedThread?.messages ?? []);
+  const timelineEntries = useMemo(
+    () => buildThreadTimelineEntries(messages, selectedThread?.activities ?? []),
+    [messages, selectedThread?.activities],
+  );
   const queuedPositionByMessageId = useMemo(() => {
     const positions = new Map<string, number>();
     for (const [index, queuedTurn] of (selectedThread?.queuedTurns ?? []).entries()) {
@@ -1726,6 +2164,7 @@ function AppShellContent() {
       clearTimeout(messageMetaTimerRef.current);
       messageMetaTimerRef.current = null;
     }
+    setExpandedActivityGroupIds({});
     setRevealedMessageId(null);
     messageMetaOpacity.setValue(0);
   }, [messageMetaOpacity, selectedThreadConversationId]);
@@ -1764,7 +2203,7 @@ function AppShellContent() {
     }
 
     requestAnimationFrame(scrollConversationToEnd);
-  }, [messages.length, selectedThreadConversationId]);
+  }, [selectedThreadConversationId, timelineEntries.length]);
 
   useEffect(() => {
     if (Platform.OS !== "android") {
@@ -2312,6 +2751,21 @@ function AppShellContent() {
         setRevealedMessageId((current) => (current === messageId ? null : current));
       });
     }, 1200);
+  };
+
+  const toggleActivityGroup = (groupId: string) => {
+    setExpandedActivityGroupIds((current) => {
+      if (groupId in current) {
+        const next = { ...current };
+        delete next[groupId];
+        return next;
+      }
+
+      return {
+        ...current,
+        [groupId]: true,
+      };
+    });
   };
 
   const showToast = (message: string) => {
@@ -3388,8 +3842,22 @@ function AppShellContent() {
         }
         style={styles.messagesScroll}
       >
-        {messages.length > 0 ? (
-          messages.map((message) => {
+        {timelineEntries.length > 0 ? (
+          timelineEntries.map((entry) => {
+            if (entry.kind === "activityGroup") {
+              return (
+                <TimelineActivityGroup
+                  key={entry.id}
+                  activities={entry.activities}
+                  expanded={entry.id in expandedActivityGroupIds}
+                  onToggle={() => {
+                    toggleActivityGroup(entry.id);
+                  }}
+                />
+              );
+            }
+
+            const { message } = entry;
             const queuedPosition =
               message.role === "user" ? (queuedPositionByMessageId.get(message.id) ?? null) : null;
             const hasMessageText = message.text.length > 0;
@@ -5878,6 +6346,129 @@ function createStyles(theme: AppTheme) {
       color: TERMINAL_MUTED,
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 10,
+    },
+    timelineActivityWrap: {
+      alignSelf: "stretch",
+      backgroundColor: TERMINAL_PANEL_ALT,
+      borderLeftColor: TERMINAL_BORDER_STRONG,
+      borderLeftWidth: 2,
+      gap: 6,
+      marginVertical: 2,
+      paddingHorizontal: 8,
+      paddingVertical: 7,
+    },
+    timelineActivitySummaryRow: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 8,
+      justifyContent: "space-between",
+    },
+    timelineActivitySummaryHeader: {
+      alignItems: "center",
+      flex: 1,
+      flexDirection: "row",
+      gap: 8,
+    },
+    timelineActivitySummaryTitle: {
+      color: TERMINAL_TEXT,
+      flex: 1,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      lineHeight: 16,
+    },
+    timelineActivitySummaryMeta: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      paddingLeft: 8,
+    },
+    timelineActivitySummaryPreview: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 15,
+      paddingLeft: 22,
+    },
+    timelineActivityExpandedList: {
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
+      gap: 8,
+      paddingTop: 8,
+    },
+    timelineActivityExpandedItem: {
+      gap: 5,
+    },
+    timelineActivityExpandedHeader: {
+      alignItems: "center",
+      flexDirection: "row",
+      justifyContent: "space-between",
+    },
+    timelineActivityExpandedEyebrow: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.4,
+      textTransform: "uppercase",
+    },
+    timelineActivityExpandedTimestamp: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+    },
+    timelineActivityExpandedTitle: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      lineHeight: 16,
+    },
+    timelineActivityExpandedText: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 16,
+    },
+    timelineActivityExpandedHint: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+    },
+    timelineActivityCodeBlock: {
+      backgroundColor: TERMINAL_BG,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      width: "100%",
+    },
+    timelineActivityCodeHeader: {
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+    },
+    timelineActivityCodeHeaderLabel: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.8,
+      textTransform: "uppercase",
+    },
+    timelineActivityCodeScroll: {
+      maxWidth: "100%",
+    },
+    timelineActivityCodeScrollContent: {
+      minWidth: "100%",
+    },
+    timelineActivityCodeText: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 16,
+      minWidth: "100%",
+      paddingHorizontal: 8,
+      paddingVertical: 8,
     },
     emptyConversation: {
       alignItems: "flex-start",
