@@ -20,7 +20,9 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   ProjectId,
   type ServerAppNotification,
+  type ServerNotificationDelivery,
   ThreadId,
+  TurnId,
   WS_CHANNELS,
   WS_METHODS,
   WebSocketRequest,
@@ -46,7 +48,7 @@ import {
   Struct,
 } from "effect";
 import { clamp } from "effect/Number";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createLogger } from "./logger";
@@ -210,6 +212,18 @@ class RouteRequestError extends Schema.TaggedErrorClass<RouteRequestError>()("Ro
   message: Schema.String,
 }) {}
 
+class PushoverDeliveryError extends Schema.TaggedErrorClass<PushoverDeliveryError>()(
+  "PushoverDeliveryError",
+  {
+    detail: Schema.String,
+    statusCode: Schema.Int,
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 const APP_NOTIFICATION_CONFIRM_TIMEOUT_MS = 2_500;
 const MAX_TRACKED_TERMINAL_TURN_NOTIFICATIONS = 5_000;
 const PUSHOVER_MESSAGES_URL = "https://api.pushover.net/1/messages.json";
@@ -228,6 +242,45 @@ function buildScopedThreadTitle(projectTitle: string, threadTitle: string): stri
     return projectTitle;
   }
   return `${projectTitle} / ${threadTitle}`;
+}
+
+function formatPushoverErrorMessage(statusCode: number, bodyText: string): string {
+  const trimmedBody = bodyText.trim();
+  if (trimmedBody.length > 0) {
+    try {
+      const parsed = JSON.parse(trimmedBody) as {
+        readonly errors?: ReadonlyArray<unknown>;
+      };
+      const errors = Array.isArray(parsed.errors)
+        ? parsed.errors.filter(
+            (error): error is string => typeof error === "string" && error.trim().length > 0,
+          )
+        : [];
+      if (errors.length > 0) {
+        return truncateNotificationText(
+          `Pushover rejected the notification: ${errors.join("; ")}`,
+          PUSHOVER_MESSAGE_MAX_CHARS,
+        );
+      }
+    } catch {
+      // Fall through to the plain-text error message.
+    }
+
+    return truncateNotificationText(
+      `Pushover rejected the notification (HTTP ${statusCode}): ${trimmedBody}`,
+      PUSHOVER_MESSAGE_MAX_CHARS,
+    );
+  }
+
+  return `Pushover rejected the notification (HTTP ${statusCode}).`;
+}
+
+function formatRequestFailure(cause: Cause.Cause<unknown>): string {
+  const failure = Cause.squash(cause);
+  if (Schema.is(RouteRequestError)(failure)) {
+    return failure.message;
+  }
+  return Cause.pretty(cause);
 }
 
 function buildTerminalTurnNotification(
@@ -293,6 +346,25 @@ function buildTerminalTurnNotification(
   };
 }
 
+function buildTestNotification(cwd: string, mode: "auto" | "pushover"): ServerAppNotification {
+  const segments = cwd.split(/[/\\]/).filter(Boolean);
+  const projectTitle = segments[segments.length - 1] ?? "workspace";
+  const title = buildScopedThreadTitle(projectTitle, "Test alert");
+  const message =
+    mode === "pushover" ? "Pushover test from the server." : "Test alert from the server.";
+
+  return {
+    notificationId: `notification:test:${mode}:${crypto.randomUUID()}`,
+    kind: "test",
+    projectId: ProjectId.makeUnsafe("notification:test:project"),
+    threadId: ThreadId.makeUnsafe("notification:test:thread"),
+    turnId: TurnId.makeUnsafe(`notification:test:turn:${crypto.randomUUID()}`),
+    title,
+    message,
+    createdAt: new Date().toISOString(),
+  };
+}
+
 export const createServer = Effect.fn(function* (): Effect.fn.Return<
   http.Server,
   ServerLifecycleError,
@@ -313,7 +385,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const clients = yield* Ref.make(new Set<WebSocket>());
   const notifiedTerminalTurns = yield* Ref.make(new Set<string>());
   const pendingNotificationAcks = yield* Ref.make(
-    new Map<string, Deferred.Deferred<void, never>>(),
+    new Map<string, Deferred.Deferred<ServerNotificationDelivery, never>>(),
   );
   const logger = createLogger("ws");
   const readiness = yield* makeServerReadiness;
@@ -337,7 +409,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return next;
     });
 
-  const confirmAppNotificationDelivery = Effect.fnUntraced(function* (notificationId: string) {
+  const confirmAppNotificationDelivery = Effect.fnUntraced(function* (
+    notificationId: string,
+    delivery: ServerNotificationDelivery,
+  ) {
     const pending = yield* Ref.get(pendingNotificationAcks).pipe(
       Effect.map((current) => current.get(notificationId) ?? null),
     );
@@ -345,7 +420,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return;
     }
 
-    yield* Effect.exit(Deferred.succeed(pending, undefined)).pipe(Effect.asVoid);
+    yield* Effect.exit(Deferred.succeed(pending, delivery)).pipe(Effect.asVoid);
   });
 
   const sendPushoverFallback = Effect.fnUntraced(function* (notification: ServerAppNotification) {
@@ -360,15 +435,57 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       user: userKey,
       title: notification.title,
       message: notification.message,
-    }).toString();
+    });
 
     const request = HttpClientRequest.post(PUSHOVER_MESSAGES_URL).pipe(
-      HttpClientRequest.setHeader("content-type", "application/x-www-form-urlencoded"),
-      HttpClientRequest.bodyText(body),
+      HttpClientRequest.bodyUrlParams(body),
     );
-    yield* httpClient.execute(request).pipe(Effect.flatMap(HttpClientResponse.filterStatusOk));
+    const response = yield* httpClient.execute(request);
+    if (response.status >= 200 && response.status < 300) {
+      return true;
+    }
 
-    return true;
+    const errorMessage = yield* response.text.pipe(
+      Effect.orElseSucceed(() => ""),
+      Effect.map((bodyText) => formatPushoverErrorMessage(response.status, bodyText)),
+    );
+    return yield* new PushoverDeliveryError({
+      detail: errorMessage,
+      statusCode: response.status,
+    });
+  });
+
+  const deliverServerNotification = Effect.fnUntraced(function* (
+    notification: ServerAppNotification,
+  ) {
+    const hasOpenClient = yield* Ref.get(clients).pipe(
+      Effect.map((current) =>
+        Array.from(current).some((client) => client.readyState === client.OPEN),
+      ),
+    );
+
+    if (hasOpenClient) {
+      const deliveryAck = yield* Deferred.make<ServerNotificationDelivery, never>();
+      yield* Ref.update(pendingNotificationAcks, (current) => {
+        const next = new Map(current);
+        next.set(notification.notificationId, deliveryAck);
+        return next;
+      });
+
+      yield* pushBus.publishAll(WS_CHANNELS.serverNotification, notification);
+
+      const appDelivery = yield* Deferred.await(deliveryAck).pipe(
+        Effect.timeoutOption(APP_NOTIFICATION_CONFIRM_TIMEOUT_MS),
+        Effect.map((result) => (result._tag === "Some" ? result.value : null)),
+        Effect.ensuring(clearPendingNotificationAck(notification.notificationId)),
+      );
+      if (appDelivery !== null) {
+        return appDelivery;
+      }
+    }
+
+    const pushoverDelivered = yield* sendPushoverFallback(notification);
+    return pushoverDelivered ? "pushover" : null;
   });
 
   const deliverTerminalTurnNotification = Effect.fnUntraced(function* (
@@ -395,36 +512,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return;
     }
 
-    const hasOpenClient = yield* Ref.get(clients).pipe(
-      Effect.map((current) =>
-        Array.from(current).some((client) => client.readyState === client.OPEN),
-      ),
-    );
-
-    if (!hasOpenClient) {
-      yield* sendPushoverFallback(notification);
-      return;
-    }
-
-    const deliveryAck = yield* Deferred.make<void, never>();
-    yield* Ref.update(pendingNotificationAcks, (current) => {
-      const next = new Map(current);
-      next.set(notification.notificationId, deliveryAck);
-      return next;
-    });
-
-    yield* pushBus.publishAll(WS_CHANNELS.serverNotification, notification);
-
-    const appConfirmed = yield* Deferred.await(deliveryAck).pipe(
-      Effect.timeoutOption(APP_NOTIFICATION_CONFIRM_TIMEOUT_MS),
-      Effect.map((result) => result._tag === "Some"),
-      Effect.ensuring(clearPendingNotificationAck(notification.notificationId)),
-    );
-    if (appConfirmed) {
-      return;
-    }
-
-    yield* sendPushoverFallback(notification);
+    yield* deliverServerNotification(notification).pipe(Effect.asVoid);
   });
 
   const maybeDeliverTerminalTurnNotification = Effect.fnUntraced(function* (
@@ -900,9 +988,58 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         });
         return settings;
       }
-      case WS_METHODS.serverConfirmNotificationDelivery:
-        yield* confirmAppNotificationDelivery(stripRequestTag(request.body).notificationId);
+      case WS_METHODS.serverConfirmNotificationDelivery: {
+        const body = stripRequestTag(request.body);
+        yield* confirmAppNotificationDelivery(body.notificationId, body.delivery);
         return {};
+      }
+      case WS_METHODS.serverSendTestNotification: {
+        const body = stripRequestTag(request.body);
+        const notification = buildTestNotification(cwd, body.mode);
+
+        if (body.mode === "pushover") {
+          const pushoverDelivered = yield* sendPushoverFallback(notification).pipe(
+            Effect.catchTag("PushoverDeliveryError", (error) =>
+              Effect.fail(
+                new RouteRequestError({
+                  message: error.message,
+                }),
+              ),
+            ),
+          );
+          if (!pushoverDelivered) {
+            return yield* new RouteRequestError({
+              message: "Pushover is not configured on the server.",
+            });
+          }
+
+          return {
+            notificationId: notification.notificationId,
+            delivery: "pushover",
+          };
+        }
+
+        const delivery = yield* deliverServerNotification(notification).pipe(
+          Effect.catchTag("PushoverDeliveryError", (error) =>
+            Effect.fail(
+              new RouteRequestError({
+                message: error.message,
+              }),
+            ),
+          ),
+        );
+        if (delivery === null) {
+          return yield* new RouteRequestError({
+            message:
+              "The test alert could not be delivered to the app, and Pushover is not configured.",
+          });
+        }
+
+        return {
+          notificationId: notification.notificationId,
+          delivery,
+        };
+      }
       default: {
         const _exhaustiveCheck: never = request.body;
         return yield* new RouteRequestError({
@@ -939,7 +1076,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     if (Exit.isFailure(result)) {
       return yield* sendWsResponse({
         id: request.success.id,
-        error: { message: Cause.pretty(result.cause) },
+        error: { message: formatRequestFailure(result.cause) },
       });
     }
 

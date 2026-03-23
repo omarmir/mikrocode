@@ -64,7 +64,7 @@ export type ServerConversationCapabilities = typeof ServerConversationCapabiliti
 export const ServerNotificationDelivery = Schema.Literals(["toast", "device"]);
 export type ServerNotificationDelivery = typeof ServerNotificationDelivery.Type;
 
-export const ServerAppNotificationKind = Schema.Literals(["turn.completed", "turn.error"]);
+export const ServerAppNotificationKind = Schema.Literals(["turn.completed", "turn.error", "test"]);
 export type ServerAppNotificationKind = typeof ServerAppNotificationKind.Type;
 
 export const ServerAppNotification = Schema.Struct({
@@ -85,6 +85,23 @@ export const ServerConfirmNotificationDeliveryInput = Schema.Struct({
 });
 export type ServerConfirmNotificationDeliveryInput =
   typeof ServerConfirmNotificationDeliveryInput.Type;
+
+export const ServerTestNotificationMode = Schema.Literals(["auto", "pushover"]);
+export type ServerTestNotificationMode = typeof ServerTestNotificationMode.Type;
+
+export const ServerTestNotificationDelivery = Schema.Literals(["toast", "device", "pushover"]);
+export type ServerTestNotificationDelivery = typeof ServerTestNotificationDelivery.Type;
+
+export const ServerSendTestNotificationInput = Schema.Struct({
+  mode: ServerTestNotificationMode,
+});
+export type ServerSendTestNotificationInput = typeof ServerSendTestNotificationInput.Type;
+
+export const ServerSendTestNotificationResult = Schema.Struct({
+  notificationId: TrimmedNonEmptyString,
+  delivery: ServerTestNotificationDelivery,
+});
+export type ServerSendTestNotificationResult = typeof ServerSendTestNotificationResult.Type;
 
 const PushoverCredential = TrimmedNonEmptyString.check(Schema.isPattern(/^[A-Za-z0-9]{30}$/));
 export type PushoverCredential = typeof PushoverCredential.Type;

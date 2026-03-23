@@ -43,6 +43,8 @@ import {
   type RpcResponse,
   type SearchDirectoryInput,
   type SendTurnInput,
+  type SendTestNotificationInput,
+  type SendTestNotificationResult,
   type SetNotificationSettingsInput,
   type StopSessionInput,
   type UserInputResponseInput,
@@ -829,6 +831,13 @@ export function useBackendConnection() {
     },
   );
 
+  const sendTestNotification = useStableEvent(
+    async (input: SendTestNotificationInput): Promise<SendTestNotificationResult> =>
+      runBusyCommand(input.mode === "pushover" ? "Testing Pushover" : "Testing notifications", () =>
+        request<SendTestNotificationResult>(MOBILE_WS_METHODS.serverSendTestNotification, input),
+      ),
+  );
+
   const dismissServerNotification = useStableEvent((notificationId: string) => {
     startTransition(() => {
       setServerNotifications((current) =>
@@ -1049,6 +1058,7 @@ export function useBackendConnection() {
       setNotificationSettings(input),
     confirmNotificationDelivery: (input: ConfirmNotificationDeliveryInput) =>
       confirmNotificationDelivery(input),
+    sendTestNotification: (input: SendTestNotificationInput) => sendTestNotification(input),
     dismissServerNotification: (notificationId: string) =>
       dismissServerNotification(notificationId),
     interruptTurn: (input: InterruptTurnInput) => interruptTurn(input),

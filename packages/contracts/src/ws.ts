@@ -35,6 +35,7 @@ import {
   ServerConfigUpdatedPayload,
   ServerConfirmNotificationDeliveryInput,
   ServerConversationCapabilitiesInput,
+  ServerSendTestNotificationInput,
   ServerSetNotificationSettingsInput,
 } from "./server";
 
@@ -59,6 +60,7 @@ export const WS_METHODS = {
   serverGetConversationCapabilities: "server.getConversationCapabilities",
   serverSetNotificationSettings: "server.setNotificationSettings",
   serverConfirmNotificationDelivery: "server.confirmNotificationDelivery",
+  serverSendTestNotification: "server.sendTestNotification",
 } as const;
 
 export const WS_CHANNELS = {
@@ -107,6 +109,7 @@ const WebSocketRequestBody = Schema.Union([
     WS_METHODS.serverConfirmNotificationDelivery,
     ServerConfirmNotificationDeliveryInput,
   ),
+  tagRequestBody(WS_METHODS.serverSendTestNotification, ServerSendTestNotificationInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({

@@ -16,6 +16,8 @@ import type {
   ServerConfig,
   ServerConfirmNotificationDeliveryInput,
   ServerConversationCapabilities,
+  ServerSendTestNotificationInput,
+  ServerSendTestNotificationResult,
   ServerSetNotificationSettingsInput,
   TurnDispatchMode,
   UploadChatAttachment,
@@ -39,6 +41,7 @@ export const MOBILE_WS_METHODS = {
   serverGetConversationCapabilities: "server.getConversationCapabilities",
   serverSetNotificationSettings: "server.setNotificationSettings",
   serverConfirmNotificationDelivery: "server.confirmNotificationDelivery",
+  serverSendTestNotification: "server.sendTestNotification",
 } as const;
 
 export const MOBILE_WS_CHANNELS = {
@@ -148,6 +151,8 @@ export interface GetConversationCapabilitiesInput {
 
 export type SetNotificationSettingsInput = ServerSetNotificationSettingsInput;
 export type ConfirmNotificationDeliveryInput = ServerConfirmNotificationDeliveryInput;
+export type SendTestNotificationInput = ServerSendTestNotificationInput;
+export type SendTestNotificationResult = ServerSendTestNotificationResult;
 export type MobileServerNotification = ServerAppNotification;
 
 export interface MobileBackendState {

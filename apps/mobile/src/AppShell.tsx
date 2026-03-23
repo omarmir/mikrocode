@@ -1,7 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import { Feather } from "@expo/vector-icons";
+import Constants from "expo-constants";
 import * as ImagePicker from "expo-image-picker";
-import * as Notifications from "expo-notifications";
 import Prism from "prismjs";
 import "prismjs/components/prism-bash";
 import "prismjs/components/prism-clike";
@@ -20,6 +20,7 @@ import {
   createContext,
   isValidElement,
   type ReactNode,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -101,6 +102,7 @@ const PERSISTENT_SIDEBAR_BREAKPOINT = 920;
 const WIDE_LAYOUT_BREAKPOINT = 1180;
 const PANEL_ANIMATION_DURATION_MS = 220;
 const DEVICE_NOTIFICATION_CHANNEL_ID = "turn-updates";
+const ANDROID_EXPO_GO_APP_OWNERSHIP = "expo";
 const TERMINAL_FONT_FAMILY = Platform.select({
   ios: "Menlo",
   android: "monospace",
@@ -206,6 +208,15 @@ function formatServerNotificationToast(notification: {
   readonly message: string;
 }) {
   return `${notification.title}: ${notification.message}`;
+}
+
+type NotificationsModule = typeof import("expo-notifications");
+
+let notificationsModulePromise: Promise<NotificationsModule> | null = null;
+
+function loadNotificationsModule() {
+  notificationsModulePromise ??= import("expo-notifications");
+  return notificationsModulePromise;
 }
 
 function getCodeTokenStyles(
@@ -1353,6 +1364,7 @@ function AppShellContent() {
     resolvedWebSocketUrl,
     searchDirectory,
     sendTurn,
+    sendTestNotification,
     serverConfig,
     serverNotifications,
     setNotificationSettings,
@@ -1473,6 +1485,9 @@ function AppShellContent() {
   const isConnected = status === "connected";
   const providers = serverConfig?.providers ?? [];
   const notificationsConfigured = serverConfig?.notifications.pushover.configured ?? false;
+  const supportsDeviceNotifications = !(
+    Platform.OS === "android" && Constants.appOwnership === ANDROID_EXPO_GO_APP_OWNERSHIP
+  );
   const serverDirectoryHint =
     serverConfig?.cwd ?? welcome?.cwd ?? selectedProject?.workspaceRoot ?? "";
   const selectedThreadConversationId = selectedThread?.id ?? null;
@@ -1577,6 +1592,37 @@ function AppShellContent() {
     setPushoverUserKeyDraft(serverConfig?.notifications.pushover.userKey ?? "");
   }, [serverConfig?.notifications.pushover.appToken, serverConfig?.notifications.pushover.userKey]);
 
+  const ensureDeviceNotificationsReady = useCallback(
+    async (promptForPermission: boolean) => {
+      if (!supportsDeviceNotifications) {
+        return false;
+      }
+
+      const notificationsModule = await loadNotificationsModule();
+      if (Platform.OS === "android" && !deviceNotificationChannelReadyRef.current) {
+        await notificationsModule.setNotificationChannelAsync(DEVICE_NOTIFICATION_CHANNEL_ID, {
+          name: "Turn updates",
+          importance: notificationsModule.AndroidImportance.DEFAULT,
+        });
+        deviceNotificationChannelReadyRef.current = true;
+      }
+
+      let permissions = await notificationsModule.getPermissionsAsync();
+      if (!permissions.granted && promptForPermission) {
+        permissions = await notificationsModule.requestPermissionsAsync({
+          ios: {
+            allowAlert: true,
+            allowBadge: false,
+            allowSound: false,
+          },
+        });
+      }
+
+      return permissions.granted;
+    },
+    [supportsDeviceNotifications],
+  );
+
   useEffect(() => {
     if (processingServerNotificationRef.current || serverNotifications.length === 0) {
       return;
@@ -1607,7 +1653,8 @@ function AppShellContent() {
           return;
         }
 
-        await Notifications.scheduleNotificationAsync({
+        const notificationsModule = await loadNotificationsModule();
+        await notificationsModule.scheduleNotificationAsync({
           content: {
             title: nextNotification.title,
             body: nextNotification.message,
@@ -1629,7 +1676,12 @@ function AppShellContent() {
         processingServerNotificationRef.current = false;
       }
     })();
-  }, [confirmNotificationDelivery, dismissServerNotification, serverNotifications]);
+  }, [
+    confirmNotificationDelivery,
+    dismissServerNotification,
+    ensureDeviceNotificationsReady,
+    serverNotifications,
+  ]);
 
   useEffect(() => {
     if (!navMenuOpen) {
@@ -2251,29 +2303,6 @@ function AppShellContent() {
     }, 1800);
   };
 
-  const ensureDeviceNotificationsReady = async (promptForPermission: boolean) => {
-    if (Platform.OS === "android" && !deviceNotificationChannelReadyRef.current) {
-      await Notifications.setNotificationChannelAsync(DEVICE_NOTIFICATION_CHANNEL_ID, {
-        name: "Turn updates",
-        importance: Notifications.AndroidImportance.DEFAULT,
-      });
-      deviceNotificationChannelReadyRef.current = true;
-    }
-
-    let permissions = await Notifications.getPermissionsAsync();
-    if (!permissions.granted && promptForPermission) {
-      permissions = await Notifications.requestPermissionsAsync({
-        ios: {
-          allowAlert: true,
-          allowBadge: false,
-          allowSound: false,
-        },
-      });
-    }
-
-    return permissions.granted;
-  };
-
   const handleSaveNotificationSettings = async (input?: {
     readonly appToken: string | null;
     readonly userKey: string | null;
@@ -2306,9 +2335,23 @@ function AppShellContent() {
       notifications.pushover.configured
         ? deviceNotificationsEnabled
           ? "Notification delivery updated"
-          : "Saved. Device alerts are disabled, so missed app delivery falls back to Pushover."
+          : supportsDeviceNotifications
+            ? "Saved. Device alerts are disabled, so missed app delivery falls back to Pushover."
+            : "Saved. Android Expo Go cannot test device alerts, so missed app delivery falls back to Pushover."
         : "Notification settings cleared",
     );
+  };
+
+  const handleSendTestNotification = async (mode: "auto" | "pushover") => {
+    const result = await sendTestNotification({ mode });
+    if (mode === "pushover") {
+      showToast("Pushover test sent");
+      return;
+    }
+
+    if (result.delivery === "pushover") {
+      showToast("Test alert fell back to Pushover");
+    }
   };
 
   const closeConversationPicker = () => {
@@ -4228,6 +4271,16 @@ function AppShellContent() {
             sessions schedule a device notification, and Pushover is used only when the app does not
             confirm delivery in time.
           </Text>
+          <Text style={styles.helperText}>
+            Test alert follows the normal app-first flow. Test Pushover bypasses app delivery and
+            sends the server fallback directly.
+          </Text>
+          {!supportsDeviceNotifications ? (
+            <Text style={styles.helperText}>
+              Android Expo Go cannot test device notifications with `expo-notifications`. Use a
+              development build for that path.
+            </Text>
+          ) : null}
           <TextInput
             autoCapitalize="none"
             autoCorrect={false}
@@ -4272,6 +4325,24 @@ function AppShellContent() {
                   appToken: null,
                   userKey: null,
                 });
+              }}
+            />
+          </View>
+          <View style={styles.inlineButtonRow}>
+            <ActionButton
+              disabled={!isConnected || busyAction !== null}
+              emphasis="secondary"
+              label="Test alert"
+              onPress={() => {
+                void handleSendTestNotification("auto");
+              }}
+            />
+            <ActionButton
+              disabled={!isConnected || busyAction !== null || !notificationsConfigured}
+              emphasis="secondary"
+              label="Test Pushover"
+              onPress={() => {
+                void handleSendTestNotification("pushover");
               }}
             />
           </View>

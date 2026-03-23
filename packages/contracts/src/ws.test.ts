@@ -89,6 +89,19 @@ it.effect("accepts notification settings update requests", () =>
   }),
 );
 
+it.effect("accepts notification test requests", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWebSocketRequest({
+      id: "req-notify-test-1",
+      body: {
+        _tag: WS_METHODS.serverSendTestNotification,
+        mode: "pushover",
+      },
+    });
+    assert.strictEqual(parsed.body._tag, WS_METHODS.serverSendTestNotification);
+  }),
+);
+
 it.effect("accepts typed websocket push envelopes with sequence", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeWsResponse({
