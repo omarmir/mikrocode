@@ -6,6 +6,7 @@ import type {
   GitRunStackedActionResult,
   GitStatusResult,
   OrchestrationReadModel,
+  ProjectCloneGitRepositoryResult,
   ProjectEntry,
   ProviderModelOptions,
   ProviderReasoningEffort,
@@ -28,6 +29,7 @@ export const MOBILE_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getSnapshot: "orchestration.getSnapshot",
   projectsCreateDirectory: "projects.createDirectory",
+  projectsCloneGitRepository: "projects.cloneGitRepository",
   projectsListDirectory: "projects.listDirectory",
   projectsSearchEntries: "projects.searchEntries",
   gitCheckout: "git.checkout",
@@ -128,6 +130,11 @@ export interface CreateDirectoryInput {
   readonly relativePath: string;
 }
 
+export interface CloneGitRepositoryInput {
+  readonly cwd: string;
+  readonly repositoryUrl: string;
+}
+
 export interface GitWorkspaceInput {
   readonly cwd: string;
 }
@@ -169,6 +176,8 @@ export interface DirectoryListing {
   readonly entries: ProjectEntry[];
   readonly truncated: boolean;
 }
+
+export type CloneGitRepositoryResult = ProjectCloneGitRepositoryResult;
 
 export type MobileGitStatus = GitStatusResult;
 export type MobileGitBranches = GitListBranchesResult;

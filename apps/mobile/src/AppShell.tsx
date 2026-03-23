@@ -1814,6 +1814,7 @@ function AppShellContent() {
   const {
     busyAction,
     clearError,
+    cloneGitRepository,
     connect,
     connectionSettings,
     createDirectory,
@@ -1906,6 +1907,7 @@ function AppShellContent() {
   const [revealedMessageId, setRevealedMessageId] = useState<string | null>(null);
   const [projectBuilderOpen, setProjectBuilderOpen] = useState(false);
   const [projectBuilderRoot, setProjectBuilderRoot] = useState<string | null>(null);
+  const [projectBuilderMode, setProjectBuilderMode] = useState<"mount" | "clone">("mount");
   const [conversationPickerMode, setConversationPickerMode] = useState<ComposerPanelMode | null>(
     null,
   );
@@ -1919,6 +1921,7 @@ function AppShellContent() {
   const [isLoadingDirectory, setIsLoadingDirectory] = useState(false);
   const [isProjectBuilderMutating, setIsProjectBuilderMutating] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const [gitCloneUrlDraft, setGitCloneUrlDraft] = useState("");
   const [gitRepoStatus, setGitRepoStatus] = useState<GitStatusResult | null>(null);
   const [gitBranches, setGitBranches] = useState<GitListBranchesResult | null>(null);
   const [isLoadingGitState, setIsLoadingGitState] = useState(false);
@@ -2064,6 +2067,8 @@ function AppShellContent() {
   const projectBuilderNavigationDisabled = isProjectBuilderMutating || busyAction !== null;
   const projectBuilderSubmitDisabled =
     isProjectBuilderMutating || isLoadingDirectory || busyAction !== null;
+  const projectBuilderCloneDisabled =
+    projectBuilderSubmitDisabled || !directoryCwd?.trim() || !gitCloneUrlDraft.trim();
 
   useEffect(() => {
     if (sidebarPersistent) {
@@ -2358,7 +2363,9 @@ function AppShellContent() {
     directoryLoadSequenceRef.current += 1;
     clearError();
     setProjectBuilderRoot(serverDirectoryHint.trim() || null);
+    setProjectBuilderMode("mount");
     setNewFolderName("");
+    setGitCloneUrlDraft("");
     setProjectTitleDraft("");
     setDirectoryCwd(null);
     setDirectoryEntries([]);
@@ -2372,7 +2379,9 @@ function AppShellContent() {
     directoryLoadSequenceRef.current += 1;
     setProjectBuilderOpen(false);
     setProjectBuilderRoot(null);
+    setProjectBuilderMode("mount");
     setNewFolderName("");
+    setGitCloneUrlDraft("");
     setIsLoadingDirectory(false);
     setIsProjectBuilderMutating(false);
   };
@@ -2577,14 +2586,16 @@ function AppShellContent() {
         setDirectoryCwd(listing.cwd);
         setDirectoryEntries(listing.entries.filter((entry) => entry.kind === "directory"));
         setDirectoryTruncated(listing.truncated);
-        setProjectTitleDraft(basenameOf(listing.cwd));
+        if (projectBuilderMode === "mount") {
+          setProjectTitleDraft(basenameOf(listing.cwd));
+        }
       } finally {
         if (directoryLoadSequenceRef.current === nextSequence) {
           setIsLoadingDirectory(false);
         }
       }
     },
-    [listDirectory],
+    [listDirectory, projectBuilderMode],
   );
 
   useEffect(() => {
@@ -2684,6 +2695,33 @@ function AppShellContent() {
 
     setIsProjectBuilderMutating(true);
     try {
+      const projectId = await createProject({
+        title: projectTitleDraft.trim() || basenameOf(workspaceRoot),
+        workspaceRoot,
+        defaultModel: FALLBACK_MODEL,
+      });
+
+      setSelectedProjectId(projectId);
+      setSelectedThreadId(null);
+      closeProjectBuilder();
+    } finally {
+      setIsProjectBuilderMutating(false);
+    }
+  };
+
+  const handleCloneGitProject = async () => {
+    const parentDirectory = directoryCwd?.trim() ?? "";
+    const repositoryUrl = gitCloneUrlDraft.trim();
+    if (!parentDirectory || !repositoryUrl || projectBuilderCloneDisabled) {
+      return;
+    }
+
+    setIsProjectBuilderMutating(true);
+    try {
+      const { workspaceRoot } = await cloneGitRepository({
+        cwd: parentDirectory,
+        repositoryUrl,
+      });
       const projectId = await createProject({
         title: projectTitleDraft.trim() || basenameOf(workspaceRoot),
         workspaceRoot,
@@ -5063,6 +5101,21 @@ function AppShellContent() {
           />
         </View>
 
+        <View style={styles.switchRow}>
+          <Text style={styles.metaValue}>Clone from git</Text>
+          <Switch
+            disabled={projectBuilderNavigationDisabled}
+            onValueChange={(value) => {
+              setProjectBuilderMode(value ? "clone" : "mount");
+              setProjectTitleDraft(
+                value ? "" : basenameOf(directoryCwd ?? projectBuilderRoot ?? ""),
+              );
+            }}
+            trackColor={{ false: TERMINAL_BORDER, true: TERMINAL_ACCENT_SOFT }}
+            value={projectBuilderMode === "clone"}
+          />
+        </View>
+
         <ScrollView
           key={directoryCwd ?? projectBuilderRoot ?? "directory-browser"}
           contentContainerStyle={styles.directoryBrowserContent}
@@ -5107,28 +5160,46 @@ function AppShellContent() {
           </Text>
         ) : null}
 
-        <View style={styles.projectPickerFieldGroup}>
-          <Text style={styles.navSectionLabel}>New folder</Text>
-          <View style={styles.projectPickerInputRow}>
-            <TextInput
-              onChangeText={setNewFolderName}
-              placeholder="New folder"
-              placeholderTextColor={TERMINAL_MUTED}
-              style={[styles.input, styles.projectPickerInput]}
-              value={newFolderName}
-            />
-            <View style={styles.projectPickerActionCell}>
-              <ActionButton
-                disabled={!directoryCwd || !newFolderName.trim() || projectBuilderSubmitDisabled}
-                emphasis="ghost"
-                label="mkdir"
-                onPress={() => {
-                  void handleCreateFolder();
-                }}
+        {projectBuilderMode === "mount" ? (
+          <View style={styles.projectPickerFieldGroup}>
+            <Text style={styles.navSectionLabel}>New folder</Text>
+            <View style={styles.projectPickerInputRow}>
+              <TextInput
+                onChangeText={setNewFolderName}
+                placeholder="New folder"
+                placeholderTextColor={TERMINAL_MUTED}
+                style={[styles.input, styles.projectPickerInput]}
+                value={newFolderName}
               />
+              <View style={styles.projectPickerActionCell}>
+                <ActionButton
+                  disabled={!directoryCwd || !newFolderName.trim() || projectBuilderSubmitDisabled}
+                  emphasis="ghost"
+                  label="mkdir"
+                  onPress={() => {
+                    void handleCreateFolder();
+                  }}
+                />
+              </View>
             </View>
           </View>
-        </View>
+        ) : (
+          <View style={styles.projectPickerFieldGroup}>
+            <Text style={styles.navSectionLabel}>Repository URL</Text>
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setGitCloneUrlDraft}
+              placeholder="https://github.com/owner/repo.git"
+              placeholderTextColor={TERMINAL_MUTED}
+              style={styles.input}
+              value={gitCloneUrlDraft}
+            />
+            <Text style={styles.helperText}>
+              Clone into the current folder using the repo name, then mount that cloned folder.
+            </Text>
+          </View>
+        )}
 
         <View style={styles.projectPickerFieldGroup}>
           <Text style={styles.navSectionLabel}>Project alias</Text>
@@ -5145,10 +5216,14 @@ function AppShellContent() {
       <View style={styles.projectPickerFooter}>
         <ActionButton emphasis="secondary" label="Cancel" onPress={closeProjectBuilder} />
         <ActionButton
-          disabled={!directoryCwd?.trim() || projectBuilderSubmitDisabled}
-          label="Mount folder"
+          disabled={
+            projectBuilderMode === "clone"
+              ? projectBuilderCloneDisabled
+              : !directoryCwd?.trim() || projectBuilderSubmitDisabled
+          }
+          label={projectBuilderMode === "clone" ? "Clone + Mount" : "Mount folder"}
           onPress={() => {
-            void handleCreateProject();
+            void (projectBuilderMode === "clone" ? handleCloneGitProject() : handleCreateProject());
           }}
         />
       </View>

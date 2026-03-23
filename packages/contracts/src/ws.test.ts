@@ -86,6 +86,20 @@ it.effect("accepts projects.listDirectory requests", () =>
   }),
 );
 
+it.effect("accepts projects.cloneGitRepository requests", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWebSocketRequest({
+      id: "req-clone-1",
+      body: {
+        _tag: WS_METHODS.projectsCloneGitRepository,
+        cwd: "/repo-parent",
+        repositoryUrl: "https://github.com/openai/codex.git",
+      },
+    });
+    assert.strictEqual(parsed.body._tag, WS_METHODS.projectsCloneGitRepository);
+  }),
+);
+
 it.effect("accepts notification settings update requests", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeWebSocketRequest({

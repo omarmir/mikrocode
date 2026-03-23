@@ -4,6 +4,7 @@ import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
 const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
 const PROJECT_WRITE_FILE_PATH_MAX_LENGTH = 512;
 const PROJECT_CREATE_DIRECTORY_PATH_MAX_LENGTH = 512;
+const PROJECT_CLONE_REPOSITORY_URL_MAX_LENGTH = 2048;
 
 export const ProjectListDirectoryInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
@@ -61,3 +62,16 @@ export const ProjectCreateDirectoryResult = Schema.Struct({
   relativePath: TrimmedNonEmptyString,
 });
 export type ProjectCreateDirectoryResult = typeof ProjectCreateDirectoryResult.Type;
+
+export const ProjectCloneGitRepositoryInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  repositoryUrl: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(PROJECT_CLONE_REPOSITORY_URL_MAX_LENGTH),
+  ),
+});
+export type ProjectCloneGitRepositoryInput = typeof ProjectCloneGitRepositoryInput.Type;
+
+export const ProjectCloneGitRepositoryResult = Schema.Struct({
+  workspaceRoot: TrimmedNonEmptyString,
+});
+export type ProjectCloneGitRepositoryResult = typeof ProjectCloneGitRepositoryResult.Type;

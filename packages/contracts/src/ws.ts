@@ -26,6 +26,7 @@ import {
   GitStatusInput,
 } from "./git";
 import {
+  ProjectCloneGitRepositoryInput,
   ProjectCreateDirectoryInput,
   ProjectListDirectoryInput,
   ProjectSearchEntriesInput,
@@ -44,6 +45,7 @@ export const WS_METHODS = {
   projectsListDirectory: "projects.listDirectory",
   projectsSearchEntries: "projects.searchEntries",
   projectsCreateDirectory: "projects.createDirectory",
+  projectsCloneGitRepository: "projects.cloneGitRepository",
   projectsWriteFile: "projects.writeFile",
   gitPull: "git.pull",
   gitStatus: "git.status",
@@ -91,6 +93,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.projectsListDirectory, ProjectListDirectoryInput),
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
   tagRequestBody(WS_METHODS.projectsCreateDirectory, ProjectCreateDirectoryInput),
+  tagRequestBody(WS_METHODS.projectsCloneGitRepository, ProjectCloneGitRepositoryInput),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
   tagRequestBody(WS_METHODS.gitPull, GitPullInput),
   tagRequestBody(WS_METHODS.gitStatus, GitStatusInput),

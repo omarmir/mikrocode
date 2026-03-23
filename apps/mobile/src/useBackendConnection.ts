@@ -22,6 +22,8 @@ import {
   buildDisplayWebSocketUrl,
   buildWebSocketUrl,
   type ConfirmNotificationDeliveryInput,
+  type CloneGitRepositoryInput,
+  type CloneGitRepositoryResult,
   createClientId,
   MOBILE_WS_CHANNELS,
   MOBILE_WS_METHODS,
@@ -950,6 +952,17 @@ export function useBackendConnection() {
     );
   });
 
+  const cloneGitRepository = useStableEvent(
+    async (input: CloneGitRepositoryInput): Promise<CloneGitRepositoryResult> => {
+      return runBusyCommand("Cloning repository", () =>
+        request<CloneGitRepositoryResult>(MOBILE_WS_METHODS.projectsCloneGitRepository, {
+          cwd: input.cwd,
+          repositoryUrl: input.repositoryUrl,
+        }),
+      );
+    },
+  );
+
   const gitStatus = useStableEvent(async (input: GitWorkspaceInput): Promise<GitStatusResult> => {
     return runBusyCommand("Loading git status", () =>
       request<GitStatusResult>(MOBILE_WS_METHODS.gitStatus, {
@@ -1074,6 +1087,7 @@ export function useBackendConnection() {
     deleteThread: (input: DeleteThreadInput) => deleteThread(input),
     listDirectory: (input: ListDirectoryInput) => listDirectory(input),
     createDirectory: (input: CreateDirectoryInput) => createDirectory(input),
+    cloneGitRepository: (input: CloneGitRepositoryInput) => cloneGitRepository(input),
     gitStatus: (input: GitWorkspaceInput) => gitStatus(input),
     gitListBranches: (input: GitWorkspaceInput) => gitListBranches(input),
     gitPull: (input: GitWorkspaceInput) => gitPull(input),

@@ -12,7 +12,11 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
-import { buildDomainNotification, buildRuntimeTurnNotification } from "./wsServer";
+import {
+  buildDomainNotification,
+  buildRuntimeTurnNotification,
+  inferCloneDestinationName,
+} from "./wsServer";
 
 const now = "2026-03-23T20:00:00.000Z";
 const projectId = ProjectId.makeUnsafe("project-1");
@@ -185,5 +189,17 @@ describe("server notifications", () => {
       message: "Provider session error",
       createdAt: now,
     });
+  });
+});
+
+describe("inferCloneDestinationName", () => {
+  it("derives names from https and ssh remotes", () => {
+    expect(inferCloneDestinationName("https://github.com/openai/codex.git")).toBe("codex");
+    expect(inferCloneDestinationName("git@github.com:openai/codex.git")).toBe("codex");
+  });
+
+  it("rejects remotes without a safe destination name", () => {
+    expect(inferCloneDestinationName("")).toBeNull();
+    expect(inferCloneDestinationName("https://github.com/")).toBeNull();
   });
 });

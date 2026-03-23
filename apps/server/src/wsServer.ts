@@ -53,7 +53,9 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createLogger } from "./logger";
+import { GitCommandError } from "./git/Errors.ts";
 import { GitManager } from "./git/Services/GitManager.ts";
+import { GitService } from "./git/Services/GitService.ts";
 import { listWorkspaceDirectories, searchWorkspaceEntries } from "./workspaceEntries";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
@@ -197,6 +199,7 @@ export type ServerRuntimeServices =
   | ServerCoreRuntimeServices
   | GitManager
   | GitCore
+  | GitService
   | AnalyticsService
   | NotificationSettingsService
   | HttpClient.HttpClient;
@@ -310,6 +313,53 @@ function readFirstUserInputQuestion(payload: unknown): string | null {
   }
 
   return null;
+}
+
+function safeDecodeUriPathSegment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+export function inferCloneDestinationName(repositoryUrl: string): string | null {
+  const trimmed = repositoryUrl.trim().replace(/\/+$/g, "");
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  let candidatePath = trimmed;
+  const sshMatch = /^(?:ssh:\/\/)?git@[^:]+:(.+)$/i.exec(trimmed);
+  if (sshMatch?.[1]) {
+    candidatePath = sshMatch[1];
+  } else {
+    try {
+      candidatePath = new URL(trimmed).pathname;
+    } catch {
+      candidatePath = trimmed;
+    }
+  }
+
+  const basename = safeDecodeUriPathSegment(
+    candidatePath
+      .replace(/\/+$/g, "")
+      .split(/[\\/]/)
+      .findLast((segment) => segment.length > 0) ?? "",
+  )
+    .replace(/\.git$/i, "")
+    .trim();
+  if (
+    basename.length === 0 ||
+    basename === "." ||
+    basename === ".." ||
+    basename.includes("/") ||
+    basename.includes("\\")
+  ) {
+    return null;
+  }
+
+  return basename;
 }
 
 function resolveNotificationContext(
@@ -467,6 +517,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const gitManager = yield* GitManager;
   const providerHealth = yield* ProviderHealth;
   const git = yield* GitCore;
+  const gitService = yield* GitService;
   const httpClient = yield* HttpClient.HttpClient;
   const notificationSettings = yield* NotificationSettingsService;
   const providerService = yield* ProviderService;
@@ -1082,6 +1133,48 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           ),
         );
         return { relativePath: target.relativePath };
+      }
+      case WS_METHODS.projectsCloneGitRepository: {
+        const body = stripRequestTag(request.body);
+        const destinationName = inferCloneDestinationName(body.repositoryUrl);
+        if (!destinationName) {
+          return yield* new RouteRequestError({
+            message: "Failed to infer a repository folder name from the clone URL.",
+          });
+        }
+
+        const target = yield* resolveWorkspaceWritePath({
+          workspaceRoot: body.cwd,
+          relativePath: destinationName,
+          path,
+        });
+        const existingTarget = yield* fileSystem
+          .stat(target.absolutePath)
+          .pipe(Effect.catch(() => Effect.succeed(null)));
+        if (existingTarget) {
+          return yield* new RouteRequestError({
+            message: `Clone target already exists: ${target.absolutePath}`,
+          });
+        }
+
+        yield* gitService
+          .execute({
+            operation: "WsServer.projectsCloneGitRepository",
+            cwd: body.cwd,
+            args: ["clone", body.repositoryUrl, target.relativePath],
+            timeoutMs: 120_000,
+          })
+          .pipe(
+            Effect.mapError((cause) =>
+              Schema.is(GitCommandError)(cause)
+                ? new RouteRequestError({ message: cause.detail })
+                : cause,
+            ),
+          );
+
+        return {
+          workspaceRoot: target.absolutePath,
+        };
       }
       case WS_METHODS.gitStatus:
         return yield* gitManager.status(stripRequestTag(request.body));
