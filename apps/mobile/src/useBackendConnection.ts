@@ -5,6 +5,7 @@ import type {
   GitPrepareMainlineMergeResult,
   GitPullResult,
   GitRunStackedActionResult,
+  OrchestrationThread,
   GitStatusResult,
   OrchestrationReadModel,
   ProjectEntry,
@@ -58,8 +59,80 @@ interface PendingRequest {
   readonly timeoutHandle: ReturnType<typeof setTimeout>;
 }
 
+interface PendingServerResponseMarker {
+  readonly baselineLatestTurnKey: string | null;
+  readonly baselineAssistantMessageCount: number;
+  readonly baselineLatestActivityId: string | null;
+}
+
 function isSocketOpen(socket: WebSocket | null) {
   return socket?.readyState === WebSocket.OPEN;
+}
+
+function getLatestTurnKey(thread: OrchestrationThread | null | undefined) {
+  const latestTurn = thread?.latestTurn ?? null;
+  if (!latestTurn) {
+    return null;
+  }
+
+  return [
+    latestTurn.turnId,
+    latestTurn.state,
+    latestTurn.requestedAt,
+    latestTurn.startedAt ?? "",
+    latestTurn.completedAt ?? "",
+    latestTurn.assistantMessageId ?? "",
+  ].join(":");
+}
+
+function countAssistantMessages(thread: OrchestrationThread | null | undefined) {
+  return (
+    thread?.messages.reduce(
+      (count, message) => count + (message.role === "assistant" ? 1 : 0),
+      0,
+    ) ?? 0
+  );
+}
+
+function createPendingServerResponseMarker(
+  thread: OrchestrationThread | null | undefined,
+): PendingServerResponseMarker {
+  return {
+    baselineLatestTurnKey: getLatestTurnKey(thread),
+    baselineAssistantMessageCount: countAssistantMessages(thread),
+    baselineLatestActivityId: thread?.activities.at(-1)?.id ?? null,
+  };
+}
+
+function shouldClearPendingServerResponse(
+  marker: PendingServerResponseMarker,
+  thread: OrchestrationThread | null | undefined,
+) {
+  if (!thread) {
+    return true;
+  }
+
+  const sessionStatus = thread.session?.status ?? "idle";
+  if (
+    sessionStatus === "starting" ||
+    sessionStatus === "running" ||
+    sessionStatus === "interrupted" ||
+    sessionStatus === "stopped" ||
+    sessionStatus === "error"
+  ) {
+    return true;
+  }
+
+  if (getLatestTurnKey(thread) !== marker.baselineLatestTurnKey) {
+    return true;
+  }
+
+  if (countAssistantMessages(thread) > marker.baselineAssistantMessageCount) {
+    return true;
+  }
+
+  const latestActivity = thread.activities.at(-1) ?? null;
+  return latestActivity?.id !== marker.baselineLatestActivityId && latestActivity?.tone === "error";
 }
 
 function useStableEvent<TArgs extends unknown[], TResult>(handler: (...args: TArgs) => TResult) {
@@ -94,6 +167,9 @@ export function useBackendConnection() {
   const [lastPushSequence, setLastPushSequence] = useState<number | null>(null);
   const [isRefreshingSnapshot, setIsRefreshingSnapshot] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [pendingServerResponses, setPendingServerResponses] = useState<
+    Record<string, PendingServerResponseMarker>
+  >({});
 
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRequestsRef = useRef<Map<string, PendingRequest>>(new Map());
@@ -157,6 +233,7 @@ export function useBackendConnection() {
     clearReconnectTimer();
     clearRefreshTimer();
     rejectPendingRequests("The socket disconnected.");
+    setPendingServerResponses({});
 
     const currentSocket = socketRef.current;
     socketRef.current = null;
@@ -431,6 +508,30 @@ export function useBackendConnection() {
     };
   }, [disconnectSocket]);
 
+  useEffect(() => {
+    setPendingServerResponses((current) => {
+      const pendingThreadIds = Object.keys(current);
+      if (pendingThreadIds.length === 0) {
+        return current;
+      }
+
+      const threads = snapshot?.threads ?? [];
+      let changed = false;
+      const next = { ...current };
+
+      for (const threadId of pendingThreadIds) {
+        const marker = current[threadId];
+        const thread = threads.find((entry) => entry.id === threadId) ?? null;
+        if (marker && shouldClearPendingServerResponse(marker, thread)) {
+          delete next[threadId];
+          changed = true;
+        }
+      }
+
+      return changed ? next : current;
+    });
+  }, [snapshot]);
+
   const runBusyCommand = useStableEvent(
     async <TResult>(label: string, work: () => Promise<TResult>) => {
       try {
@@ -524,25 +625,44 @@ export function useBackendConnection() {
   });
 
   const sendTurn = useStableEvent(async (input: SendTurnInput) => {
-    await runBusyCommand("Sending turn", () =>
-      dispatchCommand(
-        withCommandMeta({
-          type: "thread.turn.start",
-          threadId: input.threadId,
-          message: {
-            messageId: createClientId("message"),
-            role: "user" as const,
-            text: input.text,
-            attachments: [...(input.attachments ?? [])],
-          },
-          model: input.model,
-          ...(input.modelOptions ? { modelOptions: input.modelOptions } : {}),
-          assistantDeliveryMode: input.assistantDeliveryMode,
-          runtimeMode: input.runtimeMode,
-          interactionMode: input.interactionMode,
-        }),
-      ),
-    );
+    const thread = snapshot?.threads.find((entry) => entry.id === input.threadId) ?? null;
+    setPendingServerResponses((current) => ({
+      ...current,
+      [input.threadId]: createPendingServerResponseMarker(thread),
+    }));
+
+    try {
+      await runBusyCommand("Sending turn", () =>
+        dispatchCommand(
+          withCommandMeta({
+            type: "thread.turn.start",
+            threadId: input.threadId,
+            message: {
+              messageId: createClientId("message"),
+              role: "user" as const,
+              text: input.text,
+              attachments: [...(input.attachments ?? [])],
+            },
+            model: input.model,
+            ...(input.modelOptions ? { modelOptions: input.modelOptions } : {}),
+            assistantDeliveryMode: input.assistantDeliveryMode,
+            runtimeMode: input.runtimeMode,
+            interactionMode: input.interactionMode,
+          }),
+        ),
+      );
+    } catch (error) {
+      setPendingServerResponses((current) => {
+        if (!(input.threadId in current)) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[input.threadId];
+        return next;
+      });
+      throw error;
+    }
   });
 
   const updateThreadModel = useStableEvent(async (input: { threadId: string; model: string }) => {
@@ -778,6 +898,7 @@ export function useBackendConnection() {
     lastPushSequence,
     isRefreshingSnapshot,
     busyAction,
+    pendingServerResponseThreadIds: Object.keys(pendingServerResponses),
     connect: () => connect(),
     disconnect: () => disconnect(),
     refreshSnapshot: () => refreshSnapshot(),

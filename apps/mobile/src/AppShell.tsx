@@ -1107,6 +1107,19 @@ function MarkdownMessage({ value }: { readonly value: string }) {
   return <View style={styles.messageMarkdownRoot}>{normalizedElements}</View>;
 }
 
+function isThreadWaitingForResponse(
+  thread: OrchestrationThread | null,
+  hasPendingServerResponse: boolean,
+) {
+  const sessionStatus = thread?.session?.status ?? "idle";
+  return (
+    hasPendingServerResponse ||
+    thread?.latestTurn?.state === "running" ||
+    sessionStatus === "starting" ||
+    sessionStatus === "running"
+  );
+}
+
 function AppShellContent() {
   const {
     busyAction,
@@ -1132,6 +1145,7 @@ function AppShellContent() {
     interruptTurn,
     isRefreshingSnapshot,
     lastPushSequence,
+    pendingServerResponseThreadIds,
     refreshSnapshot,
     respondToApproval,
     resolvedWebSocketUrl,
@@ -1276,6 +1290,14 @@ function AppShellContent() {
     selectedThreadTurnPreference?.runtimeMode ?? selectedThread?.runtimeMode ?? "full-access";
   const selectedAssistantDeliveryMode =
     selectedThreadTurnPreference?.assistantDeliveryMode ?? "streaming";
+  const selectedThreadHasPendingServerResponse =
+    selectedThread !== null && pendingServerResponseThreadIds.includes(selectedThread.id);
+  const sessionStatus = selectedThread?.session?.status ?? "idle";
+  const sessionBusy = isThreadWaitingForResponse(
+    selectedThread,
+    selectedThreadHasPendingServerResponse,
+  );
+  const showWaitingIndicator = selectedThread !== null && sessionBusy;
 
   const snapshotSequenceLabel = lastPushSequence === null ? "--" : `${lastPushSequence}`;
   const homeSubtitle = selectedProject
@@ -1296,6 +1318,7 @@ function AppShellContent() {
     selectedThread !== null &&
     isConnected &&
     busyAction === null &&
+    !sessionBusy &&
     (draft.trim().length > 0 || draftAttachments.length > 0);
 
   useEffect(() => {
@@ -1408,12 +1431,7 @@ function AppShellContent() {
   }, [insets.bottom]);
 
   useEffect(() => {
-    const waitingActive =
-      selectedThread !== null &&
-      (selectedThread.latestTurn?.state === "running" ||
-        selectedThread.session?.status === "running");
-
-    if (!waitingActive) {
+    if (!showWaitingIndicator) {
       waitingIndicatorMotion.stopAnimation();
       waitingIndicatorMotion.setValue(0);
       return;
@@ -1443,7 +1461,7 @@ function AppShellContent() {
       waitingIndicatorMotion.stopAnimation();
       waitingIndicatorMotion.setValue(0);
     };
-  }, [selectedThread, waitingIndicatorMotion]);
+  }, [showWaitingIndicator, waitingIndicatorMotion]);
 
   const animatePanel = (
     animatedValue: Animated.Value,
@@ -2230,10 +2248,6 @@ function AppShellContent() {
     });
   };
 
-  const sessionStatus = selectedThread?.session?.status ?? "idle";
-  const sessionBusy =
-    selectedThread?.latestTurn?.state === "running" || sessionStatus === "running";
-  const showWaitingIndicator = selectedThread !== null && sessionBusy;
   const canRespondToPendingApproval =
     isConnected &&
     selectedThread !== null &&
