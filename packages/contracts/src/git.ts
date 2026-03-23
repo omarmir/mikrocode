@@ -116,6 +116,12 @@ export const GitCheckoutInput = Schema.Struct({
 });
 export type GitCheckoutInput = typeof GitCheckoutInput.Type;
 
+export const GitPrepareMainlineMergeInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  squash: Schema.optional(Schema.Boolean),
+});
+export type GitPrepareMainlineMergeInput = typeof GitPrepareMainlineMergeInput.Type;
+
 export const GitInitInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
 });
@@ -211,3 +217,11 @@ export const GitPullResult = Schema.Struct({
   upstreamBranch: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
 });
 export type GitPullResult = typeof GitPullResult.Type;
+
+export const GitPrepareMainlineMergeResult = Schema.Struct({
+  sourceBranch: TrimmedNonEmptyStringSchema,
+  targetBranch: TrimmedNonEmptyStringSchema,
+  squash: Schema.Boolean,
+  conflictsResolvedWithIncoming: Schema.Boolean,
+});
+export type GitPrepareMainlineMergeResult = typeof GitPrepareMainlineMergeResult.Type;

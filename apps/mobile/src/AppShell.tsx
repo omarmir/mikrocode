@@ -1123,6 +1123,7 @@ function AppShellContent() {
     gitCheckout,
     gitCreateBranch,
     gitListBranches,
+    gitPrepareMainlineMerge,
     gitPull,
     gitRunStackedAction,
     gitStatus,
@@ -1201,6 +1202,7 @@ function AppShellContent() {
   const [isLoadingGitState, setIsLoadingGitState] = useState(false);
   const [gitCommitMessageDraft, setGitCommitMessageDraft] = useState("");
   const [gitBranchNameDraft, setGitBranchNameDraft] = useState("");
+  const [gitMergeUseSquash, setGitMergeUseSquash] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const navTranslateX = useRef(new Animated.Value(-sidebarWidth)).current;
@@ -2062,6 +2064,25 @@ function AppShellContent() {
     showToast(`Checked out ${branch}`);
   };
 
+  const handlePrepareMainlineMerge = async () => {
+    if (!selectedWorkspaceRoot || !selectedThread) {
+      return;
+    }
+
+    const result = await gitPrepareMainlineMerge({
+      cwd: selectedWorkspaceRoot,
+      ...(gitMergeUseSquash ? { squash: true } : {}),
+    });
+    await updateThreadBranch({ threadId: selectedThread.id, branch: result.targetBranch });
+    setGitBranchNameDraft(result.targetBranch);
+    await loadGitState(selectedWorkspaceRoot);
+    showToast(
+      result.conflictsResolvedWithIncoming
+        ? `${result.squash ? "Squash" : "Merge"} ready on ${result.targetBranch}; incoming changes kept`
+        : `${result.squash ? "Squash" : "Merge"} ready on ${result.targetBranch}`,
+    );
+  };
+
   const runGitAction = async (action: "commit" | "commit_push", commitMessage?: string) => {
     if (!selectedWorkspaceRoot) {
       return null;
@@ -2222,6 +2243,13 @@ function AppShellContent() {
     busyAction === null &&
     !sessionBusy;
   const gitCurrentBranch = gitRepoStatus?.branch ?? selectedThread?.branch ?? null;
+  const gitWorkingTreeDirty = gitRepoStatus?.hasWorkingTreeChanges ?? false;
+  const gitCurrentBranchIsMainline = gitCurrentBranch === "main" || gitCurrentBranch === "master";
+  const canPrepareGitMainlineMerge =
+    canRunGitOperations &&
+    gitCurrentBranch !== null &&
+    !gitCurrentBranchIsMainline &&
+    !gitWorkingTreeDirty;
   const gitManualCommitMessage = gitCommitMessageDraft.trim();
 
   const renderSidebar = () => (
@@ -3213,6 +3241,52 @@ function AppShellContent() {
                   }}
                 />
               </View>
+            </View>
+
+            <View style={styles.gitFlowSection}>
+              <Text style={styles.navSectionLabel}>Flow 3</Text>
+              <Text style={styles.gitFlowHeading}>Merge into main/master</Text>
+              <Text style={styles.gitFlowDescription}>
+                Switch to `main` or `master`, prepare a merge from the current branch without
+                committing, then use Flow 1 or Flow 2 to commit and push from the mainline branch.
+              </Text>
+              <Text style={styles.selectionRowReason}>
+                This changes the checked-out branch and, if conflicts happen, accepts the incoming
+                changes from {formatGitBranchLabel(gitCurrentBranch)}.
+              </Text>
+              <View style={styles.switchRow}>
+                <Text style={styles.metaValue}>Squash merge</Text>
+                <Switch
+                  disabled={!canRunGitOperations}
+                  onValueChange={setGitMergeUseSquash}
+                  trackColor={{ false: TERMINAL_BORDER, true: TERMINAL_ACCENT_SOFT }}
+                  value={gitMergeUseSquash}
+                />
+              </View>
+              <Text style={styles.gitFlowStatus}>
+                Source: {formatGitBranchLabel(gitCurrentBranch)} / Target: main or master
+              </Text>
+              {gitCurrentBranchIsMainline ? (
+                <Text style={styles.helperText}>
+                  Already on {formatGitBranchLabel(gitCurrentBranch)}.
+                </Text>
+              ) : gitWorkingTreeDirty ? (
+                <Text style={styles.helperText}>
+                  Commit or stash the current working tree changes before starting the merge.
+                </Text>
+              ) : null}
+              <ActionButton
+                disabled={!canPrepareGitMainlineMerge}
+                emphasis="surface"
+                label={
+                  gitMergeUseSquash
+                    ? "checkout main/master + squash merge"
+                    : "checkout main/master + merge"
+                }
+                onPress={() => {
+                  void handlePrepareMainlineMerge();
+                }}
+              />
             </View>
           </ScrollView>
 

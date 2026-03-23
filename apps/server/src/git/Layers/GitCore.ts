@@ -202,6 +202,11 @@ function parseDefaultBranchFromRemoteHeadRef(value: string, remoteName: string):
   return branch.length > 0 ? branch : null;
 }
 
+function mergeFailureLooksLikeConflict(stdout: string, stderr: string): boolean {
+  const combinedOutput = `${stdout}\n${stderr}`;
+  return /CONFLICT\b/i.test(combinedOutput) || /Automatic merge failed/i.test(combinedOutput);
+}
+
 function createGitCommandError(
   operation: string,
   cwd: string,
@@ -591,6 +596,46 @@ const makeGitCore = Effect.gen(function* () {
       }
 
       return null;
+    });
+
+  const resolveMainlineBranchName = (cwd: string): Effect.Effect<string, GitCommandError> =>
+    Effect.gen(function* () {
+      for (const candidate of DEFAULT_BASE_BRANCH_CANDIDATES) {
+        if (yield* branchExists(cwd, candidate)) {
+          return candidate;
+        }
+      }
+
+      const primaryRemoteName = yield* resolvePrimaryRemoteName(cwd).pipe(
+        Effect.catch(() => Effect.succeed(null)),
+      );
+      if (primaryRemoteName) {
+        const remoteDefaultBranch = yield* resolveDefaultBranchName(cwd, primaryRemoteName).pipe(
+          Effect.catch(() => Effect.succeed(null)),
+        );
+        if (
+          remoteDefaultBranch &&
+          DEFAULT_BASE_BRANCH_CANDIDATES.includes(
+            remoteDefaultBranch as (typeof DEFAULT_BASE_BRANCH_CANDIDATES)[number],
+          ) &&
+          (yield* remoteBranchExists(cwd, primaryRemoteName, remoteDefaultBranch))
+        ) {
+          return remoteDefaultBranch;
+        }
+
+        for (const candidate of DEFAULT_BASE_BRANCH_CANDIDATES) {
+          if (yield* remoteBranchExists(cwd, primaryRemoteName, candidate)) {
+            return candidate;
+          }
+        }
+      }
+
+      return yield* createGitCommandError(
+        "GitCore.prepareMainlineMerge.resolveTarget",
+        cwd,
+        ["branch", "--list", ...DEFAULT_BASE_BRANCH_CANDIDATES],
+        "Could not find a local or remote main/master branch.",
+      );
     });
 
   const computeAheadCountAgainstBase = (
@@ -1381,6 +1426,83 @@ const makeGitCore = Effect.gen(function* () {
       );
     });
 
+  const prepareMainlineMerge: GitCoreShape["prepareMainlineMerge"] = (input) =>
+    Effect.gen(function* () {
+      const currentStatus = yield* statusDetails(input.cwd);
+      const sourceBranch = currentStatus.branch;
+      if (!sourceBranch) {
+        return yield* createGitCommandError(
+          "GitCore.prepareMainlineMerge",
+          input.cwd,
+          ["merge"],
+          "Cannot prepare a mainline merge from detached HEAD.",
+        );
+      }
+      if (currentStatus.hasWorkingTreeChanges) {
+        return yield* createGitCommandError(
+          "GitCore.prepareMainlineMerge",
+          input.cwd,
+          ["status", "--porcelain"],
+          "Commit or stash the current working tree changes before starting the merge.",
+        );
+      }
+
+      const targetBranch = yield* resolveMainlineBranchName(input.cwd);
+      if (sourceBranch === targetBranch) {
+        return yield* createGitCommandError(
+          "GitCore.prepareMainlineMerge",
+          input.cwd,
+          ["merge", sourceBranch],
+          `Branch '${sourceBranch}' is already the mainline branch.`,
+        );
+      }
+
+      yield* checkoutBranch({ cwd: input.cwd, branch: targetBranch });
+
+      const squash = input.squash === true;
+      const mergeArgs = squash
+        ? ["merge", "--squash", "-X", "theirs", sourceBranch]
+        : ["merge", "--no-ff", "--no-commit", "-X", "theirs", sourceBranch];
+      const mergeResult = yield* executeGit(
+        "GitCore.prepareMainlineMerge.merge",
+        input.cwd,
+        mergeArgs,
+        { allowNonZeroExit: true },
+      );
+
+      if (mergeResult.code !== 0) {
+        if (!mergeFailureLooksLikeConflict(mergeResult.stdout, mergeResult.stderr)) {
+          return yield* createGitCommandError(
+            "GitCore.prepareMainlineMerge.merge",
+            input.cwd,
+            mergeArgs,
+            mergeResult.stderr.trim() || mergeResult.stdout.trim() || "Merge failed.",
+          );
+        }
+
+        yield* runGit("GitCore.prepareMainlineMerge.acceptIncoming", input.cwd, [
+          "checkout",
+          "--theirs",
+          ".",
+        ]);
+        yield* runGit("GitCore.prepareMainlineMerge.stageResolved", input.cwd, ["add", "-A"]);
+
+        return {
+          sourceBranch,
+          targetBranch,
+          squash,
+          conflictsResolvedWithIncoming: true,
+        };
+      }
+
+      return {
+        sourceBranch,
+        targetBranch,
+        squash,
+        conflictsResolvedWithIncoming: false,
+      };
+    });
+
   const initRepo: GitCoreShape["initRepo"] = (input) =>
     executeGit("GitCore.initRepo", input.cwd, ["init"], {
       timeoutMs: 10_000,
@@ -1420,6 +1542,7 @@ const makeGitCore = Effect.gen(function* () {
     renameBranch,
     createBranch,
     checkoutBranch,
+    prepareMainlineMerge,
     initRepo,
     listLocalBranchNames,
   } satisfies GitCoreShape;

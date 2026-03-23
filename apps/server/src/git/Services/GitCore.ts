@@ -16,6 +16,8 @@ import type {
   GitInitInput,
   GitListBranchesInput,
   GitListBranchesResult,
+  GitPrepareMainlineMergeInput,
+  GitPrepareMainlineMergeResult,
   GitPullResult,
   GitRemoveWorktreeInput,
   GitStatusInput,
@@ -205,6 +207,13 @@ export interface GitCoreShape {
   readonly checkoutBranch: (
     input: GitCheckoutInput,
   ) => Effect.Effect<void, GitCommandError, Scope.Scope>;
+
+  /**
+   * Checkout main/master and prepare a merge from the current branch without committing.
+   */
+  readonly prepareMainlineMerge: (
+    input: GitPrepareMainlineMergeInput,
+  ) => Effect.Effect<GitPrepareMainlineMergeResult, GitCommandError, Scope.Scope>;
 
   /**
    * Initialize a repository in the provided directory.

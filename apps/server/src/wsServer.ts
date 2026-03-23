@@ -634,6 +634,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* git.createBranch(stripRequestTag(request.body));
       case WS_METHODS.gitCheckout:
         return yield* Effect.scoped(git.checkoutBranch(stripRequestTag(request.body)));
+      case WS_METHODS.gitPrepareMainlineMerge:
+        return yield* Effect.scoped(git.prepareMainlineMerge(stripRequestTag(request.body)));
       case WS_METHODS.gitInit:
         return yield* git.initRepo(stripRequestTag(request.body));
       case WS_METHODS.serverGetConfig:

@@ -1,6 +1,7 @@
 import type {
   AssistantDeliveryMode,
   GitListBranchesResult,
+  GitPrepareMainlineMergeResult,
   GitStackedAction,
   GitRunStackedActionResult,
   GitStatusResult,
@@ -24,6 +25,7 @@ export const MOBILE_WS_METHODS = {
   gitCheckout: "git.checkout",
   gitCreateBranch: "git.createBranch",
   gitListBranches: "git.listBranches",
+  gitPrepareMainlineMerge: "git.prepareMainlineMerge",
   gitPull: "git.pull",
   gitRunStackedAction: "git.runStackedAction",
   gitStatus: "git.status",
@@ -120,6 +122,10 @@ export interface GitRunStackedActionInput {
   readonly commitMessage?: string;
 }
 
+export interface GitPrepareMainlineMergeInput extends GitWorkspaceInput {
+  readonly squash?: boolean;
+}
+
 export interface GetConversationCapabilitiesInput {
   readonly threadId: string;
 }
@@ -141,6 +147,7 @@ export interface DirectoryListing {
 export type MobileGitStatus = GitStatusResult;
 export type MobileGitBranches = GitListBranchesResult;
 export type MobileGitRunResult = GitRunStackedActionResult;
+export type MobileGitPrepareMainlineMergeResult = GitPrepareMainlineMergeResult;
 
 export function createClientId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
