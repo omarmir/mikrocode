@@ -117,6 +117,7 @@ const makeIsolatedGitCore = (gitService: GitServiceShape) =>
       renameBranch: (input) => core.renameBranch(input),
       createBranch: (input) => core.createBranch(input),
       checkoutBranch: (input) => core.checkoutBranch(input),
+      prepareMainlineMerge: (input) => core.prepareMainlineMerge(input),
       initRepo: (input) => core.initRepo(input),
       listLocalBranchNames: (cwd) => core.listLocalBranchNames(cwd),
     } satisfies GitCoreShape;
@@ -1751,6 +1752,64 @@ it.layer(TestLayer)("git integration", (it) => {
         expect(context).not.toBeNull();
         expect(context!.stagedSummary).toContain("a.txt");
         expect(context!.stagedSummary).toContain("b.txt");
+      }),
+    );
+
+    it.effect("prepares a no-commit merge into the mainline branch", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(tmp);
+        const core = yield* GitCore;
+
+        yield* git(tmp, ["checkout", "-b", "feature/merge-ready"]);
+        yield* writeTextFile(path.join(tmp, "feature.txt"), "merge me\n");
+        yield* git(tmp, ["add", "feature.txt"]);
+        yield* git(tmp, ["commit", "-m", "feature commit"]);
+
+        const result = yield* core.prepareMainlineMerge({ cwd: tmp, squash: false });
+
+        expect(result.sourceBranch).toBe("feature/merge-ready");
+        expect(result.targetBranch).toBe(initialBranch);
+        expect(result.squash).toBe(false);
+        expect(result.conflictsResolvedWithIncoming).toBe(false);
+        expect(yield* git(tmp, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe(initialBranch);
+        expect(yield* git(tmp, ["rev-parse", "-q", "--verify", "MERGE_HEAD"])).toMatch(
+          /^[0-9a-f]{40}$/i,
+        );
+        expect(yield* git(tmp, ["status", "--short"])).toContain("A  feature.txt");
+      }),
+    );
+
+    it.effect("resolves merge conflicts by accepting incoming changes", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(tmp);
+        const core = yield* GitCore;
+        const sharedFilePath = path.join(tmp, "shared.txt");
+
+        yield* writeTextFile(sharedFilePath, "base\n");
+        yield* git(tmp, ["add", "shared.txt"]);
+        yield* git(tmp, ["commit", "-m", "add shared file"]);
+
+        yield* git(tmp, ["checkout", "-b", "feature/conflict-merge"]);
+        yield* writeTextFile(sharedFilePath, "incoming feature version\n");
+        yield* git(tmp, ["add", "shared.txt"]);
+        yield* git(tmp, ["commit", "-m", "feature update"]);
+
+        yield* git(tmp, ["checkout", initialBranch]);
+        yield* git(tmp, ["rm", "shared.txt"]);
+        yield* git(tmp, ["commit", "-m", "delete shared file"]);
+
+        yield* git(tmp, ["checkout", "feature/conflict-merge"]);
+
+        const result = yield* core.prepareMainlineMerge({ cwd: tmp, squash: false });
+
+        expect(result.targetBranch).toBe(initialBranch);
+        expect(result.conflictsResolvedWithIncoming).toBe(true);
+        expect(yield* git(tmp, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe(initialBranch);
+        expect(yield* git(tmp, ["diff", "--name-only", "--diff-filter=U"])).toBe("");
+        expect(yield* git(tmp, ["status", "--short"])).toContain("A  shared.txt");
+        expect(yield* git(tmp, ["show", ":shared.txt"])).toBe("incoming feature version");
       }),
     );
 

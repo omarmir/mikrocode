@@ -1,9 +1,23 @@
 import { StatusBar } from "expo-status-bar";
 import { Feather } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
+import Prism from "prismjs";
+import "prismjs/components/prism-bash";
+import "prismjs/components/prism-clike";
+import "prismjs/components/prism-diff";
+import "prismjs/components/prism-javascript";
+import "prismjs/components/prism-json";
+import "prismjs/components/prism-jsx";
+import "prismjs/components/prism-markdown";
+import "prismjs/components/prism-markup";
+import "prismjs/components/prism-tsx";
+import "prismjs/components/prism-typescript";
+import "prismjs/components/prism-yaml";
 import {
   type ComponentProps,
+  cloneElement,
   createContext,
+  isValidElement,
   type ReactNode,
   useContext,
   useEffect,
@@ -26,9 +40,12 @@ import {
   Switch,
   Text,
   TextInput,
+  type TextStyle,
   View,
+  type ViewStyle,
   useWindowDimensions,
 } from "react-native";
+import { Renderer, type MarkedStyles, useMarkdown } from "react-native-marked";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -90,6 +107,405 @@ type DraftImageAttachment = UploadChatAttachment & {
   readonly previewUri: string;
 };
 type FeatherIconName = ComponentProps<typeof Feather>["name"];
+
+type MessageMarkdownStyles = {
+  readonly root: ViewStyle;
+  readonly text: TextStyle;
+  readonly paragraph: ViewStyle;
+  readonly link: TextStyle;
+  readonly blockquote: ViewStyle;
+  readonly heading: TextStyle;
+  readonly codespan: TextStyle;
+  readonly codeBlock: ViewStyle;
+  readonly codeHeader: ViewStyle;
+  readonly codeHeaderLabel: TextStyle;
+  readonly codeScroll: ViewStyle;
+  readonly codeScrollContent: ViewStyle;
+  readonly codeContent: ViewStyle;
+  readonly codeText: TextStyle;
+  readonly codeComment: TextStyle;
+  readonly codeKeyword: TextStyle;
+  readonly codeString: TextStyle;
+  readonly codeNumber: TextStyle;
+  readonly codeFunction: TextStyle;
+  readonly codeOperator: TextStyle;
+  readonly codePunctuation: TextStyle;
+  readonly codeType: TextStyle;
+  readonly codeProperty: TextStyle;
+  readonly codeTag: TextStyle;
+  readonly codeAttrName: TextStyle;
+  readonly codeAttrValue: TextStyle;
+  readonly codeImportant: TextStyle;
+  readonly rule: ViewStyle;
+  readonly list: ViewStyle;
+  readonly listItem: TextStyle;
+  readonly table: ViewStyle;
+  readonly tableRow: ViewStyle;
+  readonly tableCell: ViewStyle;
+  readonly strong: TextStyle;
+  readonly emphasis: TextStyle;
+  readonly strikethrough: TextStyle;
+};
+
+type MarkdownRenderElementProps = {
+  readonly children?: ReactNode;
+  readonly style?: unknown;
+};
+
+const PRISM_LANGUAGE_ALIASES: Record<string, string> = {
+  bash: "bash",
+  console: "bash",
+  cts: "typescript",
+  diff: "diff",
+  javascript: "javascript",
+  js: "javascript",
+  json: "json",
+  jsx: "jsx",
+  markdown: "markdown",
+  md: "markdown",
+  mts: "typescript",
+  patch: "diff",
+  sh: "bash",
+  shell: "bash",
+  text: "plain",
+  plaintext: "plain",
+  ts: "typescript",
+  tsx: "tsx",
+  txt: "plain",
+  typescript: "typescript",
+  yaml: "yaml",
+  yml: "yaml",
+  zsh: "bash",
+};
+
+function normalizeCodeLanguage(language?: string) {
+  const normalizedLanguage = language?.trim().toLowerCase() ?? "";
+  if (normalizedLanguage.length === 0) {
+    return null;
+  }
+  return PRISM_LANGUAGE_ALIASES[normalizedLanguage] ?? normalizedLanguage;
+}
+
+function getPrismGrammar(language?: string) {
+  const normalizedLanguage = normalizeCodeLanguage(language);
+  if (!normalizedLanguage || normalizedLanguage === "plain") {
+    return null;
+  }
+  const grammar = Prism.languages[normalizedLanguage];
+  return grammar ? { grammar, language: normalizedLanguage } : null;
+}
+
+function getCodeTokenStyles(
+  token: Prism.Token,
+  markdownStyles: MessageMarkdownStyles,
+): TextStyle[] | undefined {
+  const tokenNames = [
+    token.type,
+    ...(Array.isArray(token.alias) ? token.alias : token.alias ? [token.alias] : []),
+  ];
+  const resolvedStyles = tokenNames.flatMap((tokenName) => {
+    switch (tokenName) {
+      case "comment":
+      case "prolog":
+      case "doctype":
+      case "cdata":
+        return [markdownStyles.codeComment];
+      case "keyword":
+      case "atrule":
+      case "selector":
+      case "important":
+        return [markdownStyles.codeKeyword];
+      case "string":
+      case "char":
+      case "regex":
+        return [markdownStyles.codeString];
+      case "number":
+      case "boolean":
+      case "constant":
+        return [markdownStyles.codeNumber];
+      case "function":
+      case "function-variable":
+        return [markdownStyles.codeFunction];
+      case "operator":
+        return [markdownStyles.codeOperator];
+      case "punctuation":
+        return [markdownStyles.codePunctuation];
+      case "class-name":
+      case "builtin":
+      case "type":
+      case "namespace":
+        return [markdownStyles.codeType];
+      case "property":
+      case "parameter":
+        return [markdownStyles.codeProperty];
+      case "tag":
+        return [markdownStyles.codeTag];
+      case "attr-name":
+        return [markdownStyles.codeAttrName];
+      case "attr-value":
+        return [markdownStyles.codeAttrValue];
+      case "bold":
+        return [markdownStyles.codeImportant];
+      default:
+        return [];
+    }
+  });
+
+  return resolvedStyles.length > 0 ? resolvedStyles : undefined;
+}
+
+function renderHighlightedCodeTokens(
+  tokenStream: Prism.TokenStream,
+  markdownStyles: MessageMarkdownStyles,
+  keyPrefix: string,
+): ReactNode[] {
+  if (typeof tokenStream === "string") {
+    return [tokenStream];
+  }
+
+  if (Array.isArray(tokenStream)) {
+    return tokenStream.flatMap((token, index) =>
+      renderHighlightedCodeTokens(token, markdownStyles, `${keyPrefix}-${index}`),
+    );
+  }
+
+  return [
+    <Text key={keyPrefix} style={getCodeTokenStyles(tokenStream, markdownStyles)}>
+      {renderHighlightedCodeTokens(tokenStream.content, markdownStyles, `${keyPrefix}-content`)}
+    </Text>,
+  ];
+}
+
+function flattenReactNodes(children: ReactNode): ReactNode[] {
+  if (Array.isArray(children)) {
+    return children.flatMap((child) => flattenReactNodes(child));
+  }
+  if (children === null || children === undefined || typeof children === "boolean") {
+    return [];
+  }
+  return [children];
+}
+
+function getTextLeafValue(node: ReactNode): string | null {
+  if (typeof node === "string") {
+    return node;
+  }
+  if (!isValidElement<MarkdownRenderElementProps>(node) || node.type !== Text) {
+    return null;
+  }
+  const children = node.props.children;
+  if (typeof children === "string") {
+    return children;
+  }
+  if (Array.isArray(children) && children.length === 1 && typeof children[0] === "string") {
+    return children[0];
+  }
+  return null;
+}
+
+function getUnderlineMarker(node: ReactNode): "open" | "close" | null {
+  const value = getTextLeafValue(node);
+  if (value === "<u>") {
+    return "open";
+  }
+  if (value === "</u>") {
+    return "close";
+  }
+  return null;
+}
+
+function normalizeUnderlineNodes(
+  children: ReactNode,
+  underlineStyle: TextStyle,
+  keyPrefix: string,
+): ReactNode[] {
+  const flattenedChildren = flattenReactNodes(children);
+  const normalizedChildren: ReactNode[] = [];
+  let underlineBuffer: ReactNode[] | null = null;
+  let openMarkerNode: ReactNode | null = null;
+
+  flattenedChildren.forEach((child, index) => {
+    const underlineMarker = getUnderlineMarker(child);
+    const childKeyPrefix = `${keyPrefix}-${index}`;
+
+    if (underlineMarker === "open" && underlineBuffer === null) {
+      underlineBuffer = [];
+      openMarkerNode = child;
+      return;
+    }
+
+    if (underlineMarker === "close" && underlineBuffer !== null) {
+      normalizedChildren.push(
+        ...underlineBuffer.map((bufferedChild, bufferIndex) =>
+          applyUnderlineToNode(
+            bufferedChild,
+            underlineStyle,
+            `${childKeyPrefix}-underline-${bufferIndex}`,
+          ),
+        ),
+      );
+      underlineBuffer = null;
+      openMarkerNode = null;
+      return;
+    }
+
+    if (underlineBuffer !== null) {
+      underlineBuffer.push(child);
+      return;
+    }
+
+    normalizedChildren.push(normalizeMarkdownNode(child, underlineStyle, childKeyPrefix));
+  });
+
+  if (underlineBuffer !== null) {
+    const trailingUnderlineBuffer = underlineBuffer as ReactNode[];
+    if (openMarkerNode !== null) {
+      normalizedChildren.push(
+        normalizeMarkdownNode(openMarkerNode, underlineStyle, `${keyPrefix}-open`),
+      );
+    }
+    normalizedChildren.push(
+      ...trailingUnderlineBuffer.map((bufferedChild, bufferIndex) =>
+        normalizeMarkdownNode(
+          bufferedChild,
+          underlineStyle,
+          `${keyPrefix}-trailing-${bufferIndex}`,
+        ),
+      ),
+    );
+  }
+
+  return normalizedChildren;
+}
+
+function normalizeMarkdownNode(
+  node: ReactNode,
+  underlineStyle: TextStyle,
+  keyPrefix: string,
+): ReactNode {
+  if (node === null || node === undefined || typeof node === "boolean") {
+    return null;
+  }
+  if (Array.isArray(node)) {
+    return normalizeUnderlineNodes(node, underlineStyle, keyPrefix);
+  }
+  if (!isValidElement<MarkdownRenderElementProps>(node)) {
+    return node;
+  }
+
+  return cloneElement(
+    node,
+    {
+      key: node.key ?? keyPrefix,
+    },
+    normalizeUnderlineNodes(node.props.children, underlineStyle, `${keyPrefix}-children`),
+  );
+}
+
+function applyUnderlineToNode(
+  node: ReactNode,
+  underlineStyle: TextStyle,
+  keyPrefix: string,
+): ReactNode {
+  if (node === null || node === undefined || typeof node === "boolean") {
+    return null;
+  }
+  if (Array.isArray(node)) {
+    return normalizeUnderlineNodes(node, underlineStyle, keyPrefix).map((child, index) =>
+      applyUnderlineToNode(child, underlineStyle, `${keyPrefix}-${index}`),
+    );
+  }
+  if (typeof node === "string" || typeof node === "number") {
+    return (
+      <Text key={keyPrefix} selectable style={underlineStyle}>
+        {node}
+      </Text>
+    );
+  }
+  if (!isValidElement<MarkdownRenderElementProps>(node)) {
+    return node;
+  }
+
+  const children = normalizeUnderlineNodes(
+    node.props.children,
+    underlineStyle,
+    `${keyPrefix}-children`,
+  );
+  if (node.type === Text) {
+    return cloneElement(
+      node,
+      {
+        key: node.key ?? keyPrefix,
+        style: node.props.style ? [node.props.style, underlineStyle] : underlineStyle,
+      },
+      children,
+    );
+  }
+
+  return cloneElement(
+    node,
+    {
+      key: node.key ?? keyPrefix,
+    },
+    children.map((child, index) =>
+      applyUnderlineToNode(child, underlineStyle, `${keyPrefix}-${index}`),
+    ),
+  );
+}
+
+class ChatMarkdownRenderer extends Renderer {
+  constructor(private readonly markdownStyles: MessageMarkdownStyles) {
+    super();
+  }
+
+  override code(
+    text: string,
+    language?: string,
+    _containerStyle?: ViewStyle,
+    _textStyle?: TextStyle,
+  ): ReactNode {
+    const normalizedLanguage = language?.trim();
+    const trimmedText = text.replace(/[\r\n]+$/u, "");
+    const prismGrammar = getPrismGrammar(normalizedLanguage);
+    const highlightedContent = prismGrammar
+      ? renderHighlightedCodeTokens(
+          Prism.tokenize(trimmedText, prismGrammar.grammar),
+          this.markdownStyles,
+          `${this.getKey()}-code`,
+        )
+      : trimmedText;
+
+    return (
+      <View key={this.getKey()} style={this.markdownStyles.codeBlock}>
+        {normalizedLanguage ? (
+          <View style={this.markdownStyles.codeHeader}>
+            <Text style={this.markdownStyles.codeHeaderLabel}>{normalizedLanguage}</Text>
+          </View>
+        ) : null}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={this.markdownStyles.codeScroll}
+          contentContainerStyle={this.markdownStyles.codeScrollContent}
+        >
+          <View style={this.markdownStyles.codeContent}>
+            <Text selectable style={this.markdownStyles.codeText}>
+              {highlightedContent}
+            </Text>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  override codespan(text: string, styles?: TextStyle): ReactNode {
+    return (
+      <Text key={this.getKey()} selectable style={[styles, this.markdownStyles.codespan]}>
+        {text}
+      </Text>
+    );
+  }
+}
 
 function formatProviderLabel(provider: "codex" | "claudeAgent") {
   return provider === "codex" ? "Codex" : "Claude Agent";
@@ -599,6 +1015,98 @@ function SwipeDismissRow({
   );
 }
 
+function MarkdownMessage({ value }: { readonly value: string }) {
+  const { styles, theme } = useAppThemeContext();
+  const markdownStyles = useMemo<MarkedStyles>(
+    () => ({
+      text: styles.messageMarkdownText,
+      paragraph: styles.messageMarkdownParagraph,
+      link: styles.messageMarkdownLink,
+      blockquote: styles.messageMarkdownBlockquote,
+      h1: styles.messageMarkdownHeading1,
+      h2: styles.messageMarkdownHeading2,
+      h3: styles.messageMarkdownHeading3,
+      h4: styles.messageMarkdownHeading4,
+      h5: styles.messageMarkdownHeading5,
+      h6: styles.messageMarkdownHeading6,
+      codespan: styles.messageMarkdownCodespan,
+      code: styles.messageMarkdownCode,
+      hr: styles.messageMarkdownRule,
+      list: styles.messageMarkdownList,
+      li: styles.messageMarkdownListItem,
+      table: styles.messageMarkdownTable,
+      tableRow: styles.messageMarkdownTableRow,
+      tableCell: styles.messageMarkdownTableCell,
+      strong: styles.messageMarkdownStrong,
+      em: styles.messageMarkdownEmphasis,
+      strikethrough: styles.messageMarkdownStrikethrough,
+    }),
+    [styles],
+  );
+  const renderer = useMemo(
+    () =>
+      new ChatMarkdownRenderer({
+        root: styles.messageMarkdownRoot,
+        text: styles.messageMarkdownText,
+        paragraph: styles.messageMarkdownParagraph,
+        link: styles.messageMarkdownLink,
+        blockquote: styles.messageMarkdownBlockquote,
+        heading: styles.messageMarkdownHeading3,
+        codespan: styles.messageMarkdownCodespan,
+        codeBlock: styles.messageMarkdownCode,
+        codeHeader: styles.messageMarkdownCodeHeader,
+        codeHeaderLabel: styles.messageMarkdownCodeHeaderLabel,
+        codeScroll: styles.messageMarkdownCodeScroll,
+        codeScrollContent: styles.messageMarkdownCodeScrollContent,
+        codeContent: styles.messageMarkdownCodeContent,
+        codeText: styles.messageMarkdownCodeText,
+        codeComment: styles.messageMarkdownCodeComment,
+        codeKeyword: styles.messageMarkdownCodeKeyword,
+        codeString: styles.messageMarkdownCodeString,
+        codeNumber: styles.messageMarkdownCodeNumber,
+        codeFunction: styles.messageMarkdownCodeFunction,
+        codeOperator: styles.messageMarkdownCodeOperator,
+        codePunctuation: styles.messageMarkdownCodePunctuation,
+        codeType: styles.messageMarkdownCodeType,
+        codeProperty: styles.messageMarkdownCodeProperty,
+        codeTag: styles.messageMarkdownCodeTag,
+        codeAttrName: styles.messageMarkdownCodeAttrName,
+        codeAttrValue: styles.messageMarkdownCodeAttrValue,
+        codeImportant: styles.messageMarkdownCodeImportant,
+        rule: styles.messageMarkdownRule,
+        list: styles.messageMarkdownList,
+        listItem: styles.messageMarkdownListItem,
+        table: styles.messageMarkdownTable,
+        tableRow: styles.messageMarkdownTableRow,
+        tableCell: styles.messageMarkdownTableCell,
+        strong: styles.messageMarkdownStrong,
+        emphasis: styles.messageMarkdownEmphasis,
+        strikethrough: styles.messageMarkdownStrikethrough,
+      }),
+    [styles],
+  );
+  const elements = useMarkdown(value, {
+    colorScheme: "dark",
+    renderer,
+    styles: markdownStyles,
+    theme: {
+      colors: {
+        background: theme.background,
+        border: theme.border,
+        code: theme.panelAlt,
+        link: theme.accent,
+        text: theme.text,
+      },
+    },
+  });
+  const normalizedElements = useMemo(
+    () => normalizeUnderlineNodes(elements, styles.messageMarkdownUnderline, "markdown"),
+    [elements, styles.messageMarkdownUnderline],
+  );
+
+  return <View style={styles.messageMarkdownRoot}>{normalizedElements}</View>;
+}
+
 function AppShellContent() {
   const {
     busyAction,
@@ -615,6 +1123,7 @@ function AppShellContent() {
     gitCheckout,
     gitCreateBranch,
     gitListBranches,
+    gitPrepareMainlineMerge,
     gitPull,
     gitRunStackedAction,
     gitStatus,
@@ -693,6 +1202,7 @@ function AppShellContent() {
   const [isLoadingGitState, setIsLoadingGitState] = useState(false);
   const [gitCommitMessageDraft, setGitCommitMessageDraft] = useState("");
   const [gitBranchNameDraft, setGitBranchNameDraft] = useState("");
+  const [gitMergeUseSquash, setGitMergeUseSquash] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const navTranslateX = useRef(new Animated.Value(-sidebarWidth)).current;
@@ -1554,6 +2064,25 @@ function AppShellContent() {
     showToast(`Checked out ${branch}`);
   };
 
+  const handlePrepareMainlineMerge = async () => {
+    if (!selectedWorkspaceRoot || !selectedThread) {
+      return;
+    }
+
+    const result = await gitPrepareMainlineMerge({
+      cwd: selectedWorkspaceRoot,
+      ...(gitMergeUseSquash ? { squash: true } : {}),
+    });
+    await updateThreadBranch({ threadId: selectedThread.id, branch: result.targetBranch });
+    setGitBranchNameDraft(result.targetBranch);
+    await loadGitState(selectedWorkspaceRoot);
+    showToast(
+      result.conflictsResolvedWithIncoming
+        ? `${result.squash ? "Squash" : "Merge"} ready on ${result.targetBranch}; incoming changes kept`
+        : `${result.squash ? "Squash" : "Merge"} ready on ${result.targetBranch}`,
+    );
+  };
+
   const runGitAction = async (action: "commit" | "commit_push", commitMessage?: string) => {
     if (!selectedWorkspaceRoot) {
       return null;
@@ -1714,6 +2243,13 @@ function AppShellContent() {
     busyAction === null &&
     !sessionBusy;
   const gitCurrentBranch = gitRepoStatus?.branch ?? selectedThread?.branch ?? null;
+  const gitWorkingTreeDirty = gitRepoStatus?.hasWorkingTreeChanges ?? false;
+  const gitCurrentBranchIsMainline = gitCurrentBranch === "main" || gitCurrentBranch === "master";
+  const canPrepareGitMainlineMerge =
+    canRunGitOperations &&
+    gitCurrentBranch !== null &&
+    !gitCurrentBranchIsMainline &&
+    !gitWorkingTreeDirty;
   const gitManualCommitMessage = gitCommitMessageDraft.trim();
 
   const renderSidebar = () => (
@@ -2184,16 +2720,26 @@ function AppShellContent() {
                 >
                   <View style={styles.messageBody}>
                     {hasMessageText || message.streaming ? (
-                      <Text
-                        style={[
-                          styles.messageText,
-                          message.role === "user"
-                            ? styles.messageTextUser
-                            : styles.messageTextAssistant,
-                        ]}
-                      >
-                        {hasMessageText ? message.text : "Streaming..."}
-                      </Text>
+                      hasMessageText ? (
+                        message.role === "assistant" ? (
+                          <MarkdownMessage value={message.text} />
+                        ) : (
+                          <Text
+                            style={[
+                              styles.messageText,
+                              message.role === "user"
+                                ? styles.messageTextUser
+                                : styles.messageTextAssistant,
+                            ]}
+                          >
+                            {message.text}
+                          </Text>
+                        )
+                      ) : (
+                        <Text style={[styles.messageText, styles.messageTextAssistant]}>
+                          Streaming...
+                        </Text>
+                      )
                     ) : null}
 
                     {messageAttachmentPreviews.length > 0 ? (
@@ -2695,6 +3241,52 @@ function AppShellContent() {
                   }}
                 />
               </View>
+            </View>
+
+            <View style={styles.gitFlowSection}>
+              <Text style={styles.navSectionLabel}>Flow 3</Text>
+              <Text style={styles.gitFlowHeading}>Merge into main/master</Text>
+              <Text style={styles.gitFlowDescription}>
+                Switch to `main` or `master`, prepare a merge from the current branch without
+                committing, then use Flow 1 or Flow 2 to commit and push from the mainline branch.
+              </Text>
+              <Text style={styles.selectionRowReason}>
+                This changes the checked-out branch and, if conflicts happen, accepts the incoming
+                changes from {formatGitBranchLabel(gitCurrentBranch)}.
+              </Text>
+              <View style={styles.switchRow}>
+                <Text style={styles.metaValue}>Squash merge</Text>
+                <Switch
+                  disabled={!canRunGitOperations}
+                  onValueChange={setGitMergeUseSquash}
+                  trackColor={{ false: TERMINAL_BORDER, true: TERMINAL_ACCENT_SOFT }}
+                  value={gitMergeUseSquash}
+                />
+              </View>
+              <Text style={styles.gitFlowStatus}>
+                Source: {formatGitBranchLabel(gitCurrentBranch)} / Target: main or master
+              </Text>
+              {gitCurrentBranchIsMainline ? (
+                <Text style={styles.helperText}>
+                  Already on {formatGitBranchLabel(gitCurrentBranch)}.
+                </Text>
+              ) : gitWorkingTreeDirty ? (
+                <Text style={styles.helperText}>
+                  Commit or stash the current working tree changes before starting the merge.
+                </Text>
+              ) : null}
+              <ActionButton
+                disabled={!canPrepareGitMainlineMerge}
+                emphasis="surface"
+                label={
+                  gitMergeUseSquash
+                    ? "checkout main/master + squash merge"
+                    : "checkout main/master + merge"
+                }
+                onPress={() => {
+                  void handlePrepareMainlineMerge();
+                }}
+              />
             </View>
           </ScrollView>
 
@@ -4074,7 +4666,7 @@ function createStyles(theme: AppTheme) {
       alignSelf: "flex-end",
     },
     messageWrapAssistant: {
-      alignSelf: "flex-start",
+      alignSelf: "stretch",
     },
     messageRow: {
       paddingVertical: 3,
@@ -4087,6 +4679,7 @@ function createStyles(theme: AppTheme) {
       paddingVertical: 6,
     },
     messageRowAssistant: {
+      alignSelf: "stretch",
       paddingHorizontal: 0,
       paddingVertical: 2,
     },
@@ -4099,6 +4692,7 @@ function createStyles(theme: AppTheme) {
     },
     messageBody: {
       gap: 6,
+      width: "100%",
     },
     messageText: {
       fontFamily: TERMINAL_FONT_FAMILY,
@@ -4110,6 +4704,207 @@ function createStyles(theme: AppTheme) {
     },
     messageTextAssistant: {
       color: TERMINAL_TEXT,
+    },
+    messageMarkdownRoot: {
+      gap: 6,
+      width: "100%",
+    },
+    messageMarkdownText: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      lineHeight: 17,
+    },
+    messageMarkdownParagraph: {
+      paddingVertical: 0,
+    },
+    messageMarkdownLink: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      lineHeight: 17,
+      textDecorationLine: "underline",
+    },
+    messageMarkdownBlockquote: {
+      backgroundColor: TERMINAL_PANEL,
+      borderLeftColor: TERMINAL_BORDER_STRONG,
+      borderLeftWidth: 2,
+      paddingLeft: 10,
+      paddingVertical: 4,
+    },
+    messageMarkdownHeading1: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 18,
+      fontWeight: "700",
+      lineHeight: 22,
+    },
+    messageMarkdownHeading2: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 16,
+      fontWeight: "700",
+      lineHeight: 21,
+    },
+    messageMarkdownHeading3: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 14,
+      fontWeight: "700",
+      lineHeight: 19,
+    },
+    messageMarkdownHeading4: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      fontWeight: "700",
+      lineHeight: 18,
+    },
+    messageMarkdownHeading5: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      fontWeight: "700",
+      lineHeight: 17,
+    },
+    messageMarkdownHeading6: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      lineHeight: 16,
+      letterSpacing: 0.6,
+      textTransform: "uppercase",
+    },
+    messageMarkdownCodespan: {
+      backgroundColor: TERMINAL_PANEL_ALT,
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      lineHeight: 17,
+      paddingHorizontal: 4,
+      paddingVertical: 2,
+    },
+    messageMarkdownCode: {
+      width: "100%",
+      backgroundColor: TERMINAL_PANEL_ALT,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      overflow: "hidden",
+    },
+    messageMarkdownCodeHeader: {
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+      paddingHorizontal: 8,
+      paddingVertical: 5,
+    },
+    messageMarkdownCodeHeaderLabel: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.9,
+      textTransform: "uppercase",
+    },
+    messageMarkdownCodeScroll: {
+      maxWidth: "100%",
+    },
+    messageMarkdownCodeScrollContent: {
+      minWidth: "100%",
+    },
+    messageMarkdownCodeContent: {
+      minWidth: "100%",
+      paddingHorizontal: 8,
+      paddingVertical: 8,
+    },
+    messageMarkdownCodeText: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      lineHeight: 17,
+    },
+    messageMarkdownCodeComment: {
+      color: TERMINAL_MUTED,
+    },
+    messageMarkdownCodeKeyword: {
+      color: TERMINAL_ACCENT,
+      fontWeight: "700",
+    },
+    messageMarkdownCodeString: {
+      color: TERMINAL_WARNING,
+    },
+    messageMarkdownCodeNumber: {
+      color: TERMINAL_WARNING,
+    },
+    messageMarkdownCodeFunction: {
+      color: TERMINAL_TEXT,
+      fontWeight: "700",
+    },
+    messageMarkdownCodeOperator: {
+      color: TERMINAL_TEXT,
+    },
+    messageMarkdownCodePunctuation: {
+      color: TERMINAL_MUTED,
+    },
+    messageMarkdownCodeType: {
+      color: TERMINAL_ACCENT,
+    },
+    messageMarkdownCodeProperty: {
+      color: TERMINAL_TEXT,
+    },
+    messageMarkdownCodeTag: {
+      color: TERMINAL_ACCENT,
+    },
+    messageMarkdownCodeAttrName: {
+      color: TERMINAL_ACCENT,
+    },
+    messageMarkdownCodeAttrValue: {
+      color: TERMINAL_WARNING,
+    },
+    messageMarkdownCodeImportant: {
+      color: TERMINAL_DANGER,
+      fontWeight: "700",
+    },
+    messageMarkdownRule: {
+      backgroundColor: TERMINAL_BORDER,
+      height: 1,
+      marginVertical: 4,
+    },
+    messageMarkdownList: {
+      paddingVertical: 0,
+    },
+    messageMarkdownListItem: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      lineHeight: 17,
+    },
+    messageMarkdownTable: {
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+    },
+    messageMarkdownTableRow: {
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+    },
+    messageMarkdownTableCell: {
+      borderRightColor: TERMINAL_BORDER,
+      borderRightWidth: 1,
+      padding: 6,
+    },
+    messageMarkdownStrong: {
+      fontWeight: "700",
+    },
+    messageMarkdownEmphasis: {
+      fontStyle: "italic",
+    },
+    messageMarkdownStrikethrough: {
+      textDecorationLine: "line-through",
+      textDecorationStyle: "solid",
+    },
+    messageMarkdownUnderline: {
+      textDecorationLine: "underline",
+      textDecorationStyle: "solid",
     },
     messageAttachmentRow: {
       flexDirection: "row",

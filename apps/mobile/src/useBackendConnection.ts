@@ -2,6 +2,7 @@ import { startTransition, useCallback, useEffect, useRef, useState } from "react
 
 import type {
   GitListBranchesResult,
+  GitPrepareMainlineMergeResult,
   GitPullResult,
   GitRunStackedActionResult,
   GitStatusResult,
@@ -29,6 +30,7 @@ import {
   type DirectoryListing,
   type GetConversationCapabilitiesInput,
   type GitBranchInput,
+  type GitPrepareMainlineMergeInput,
   type GitRunStackedActionInput,
   type GitWorkspaceInput,
   type InterruptTurnInput,
@@ -742,6 +744,17 @@ export function useBackendConnection() {
     },
   );
 
+  const gitPrepareMainlineMerge = useStableEvent(
+    async (input: GitPrepareMainlineMergeInput): Promise<GitPrepareMainlineMergeResult> => {
+      return runBusyCommand(input.squash ? "Preparing squash merge" : "Preparing merge", () =>
+        request<GitPrepareMainlineMergeResult>(MOBILE_WS_METHODS.gitPrepareMainlineMerge, {
+          cwd: input.cwd,
+          ...(input.squash ? { squash: true } : {}),
+        }),
+      );
+    },
+  );
+
   return {
     connectionSettings,
     setConnectionSettings,
@@ -781,6 +794,8 @@ export function useBackendConnection() {
     gitPull: (input: GitWorkspaceInput) => gitPull(input),
     gitCreateBranch: (input: GitBranchInput) => gitCreateBranch(input),
     gitCheckout: (input: GitBranchInput) => gitCheckout(input),
+    gitPrepareMainlineMerge: (input: GitPrepareMainlineMergeInput) =>
+      gitPrepareMainlineMerge(input),
     gitRunStackedAction: (input: GitRunStackedActionInput) => gitRunStackedAction(input),
   };
 }
