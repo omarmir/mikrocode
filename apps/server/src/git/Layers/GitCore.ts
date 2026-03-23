@@ -1347,6 +1347,24 @@ const makeGitCore = Effect.gen(function* () {
       fallbackErrorMessage: "git branch create failed",
     }).pipe(Effect.asVoid);
 
+  const deleteBranch: GitCoreShape["deleteBranch"] = (input) =>
+    Effect.gen(function* () {
+      const currentStatus = yield* statusDetails(input.cwd);
+      if (currentStatus.branch === input.branch) {
+        return yield* createGitCommandError(
+          "GitCore.deleteBranch",
+          input.cwd,
+          ["branch", "-D", input.branch],
+          `Cannot delete the currently checked out branch '${input.branch}'.`,
+        );
+      }
+
+      yield* executeGit("GitCore.deleteBranch", input.cwd, ["branch", "-D", input.branch], {
+        timeoutMs: 10_000,
+        fallbackErrorMessage: "git branch delete failed",
+      });
+    });
+
   const checkoutBranch: GitCoreShape["checkoutBranch"] = (input) =>
     Effect.gen(function* () {
       const [localInputExists, remoteExists] = yield* Effect.all(
@@ -1541,6 +1559,7 @@ const makeGitCore = Effect.gen(function* () {
     removeWorktree,
     renameBranch,
     createBranch,
+    deleteBranch,
     checkoutBranch,
     prepareMainlineMerge,
     initRepo,

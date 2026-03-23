@@ -24,6 +24,7 @@ export const MOBILE_WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
   gitCheckout: "git.checkout",
   gitCreateBranch: "git.createBranch",
+  gitDeleteBranch: "git.deleteBranch",
   gitListBranches: "git.listBranches",
   gitPrepareMainlineMerge: "git.prepareMainlineMerge",
   gitPull: "git.pull",

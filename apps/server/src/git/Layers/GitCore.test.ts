@@ -116,6 +116,7 @@ const makeIsolatedGitCore = (gitService: GitServiceShape) =>
       removeWorktree: (input) => core.removeWorktree(input),
       renameBranch: (input) => core.renameBranch(input),
       createBranch: (input) => core.createBranch(input),
+      deleteBranch: (input) => core.deleteBranch(input),
       checkoutBranch: (input) => core.checkoutBranch(input),
       prepareMainlineMerge: (input) => core.prepareMainlineMerge(input),
       initRepo: (input) => core.initRepo(input),
@@ -1752,6 +1753,27 @@ it.layer(TestLayer)("git integration", (it) => {
         expect(context).not.toBeNull();
         expect(context!.stagedSummary).toContain("a.txt");
         expect(context!.stagedSummary).toContain("b.txt");
+      }),
+    );
+
+    it.effect("deletes a non-current branch and rejects deleting the checked-out branch", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(tmp);
+        const core = yield* GitCore;
+
+        yield* core.createBranch({ cwd: tmp, branch: "feature/delete-me" });
+        yield* core.deleteBranch({ cwd: tmp, branch: "feature/delete-me" });
+
+        expect(yield* git(tmp, ["branch", "--list", "feature/delete-me"])).toBe("");
+
+        const deleteCurrentResult = yield* Effect.result(
+          core.deleteBranch({ cwd: tmp, branch: initialBranch }),
+        );
+        expect(deleteCurrentResult._tag).toBe("Failure");
+        if (deleteCurrentResult._tag === "Failure") {
+          expect(deleteCurrentResult.failure.message).toContain("currently checked out branch");
+        }
       }),
     );
 

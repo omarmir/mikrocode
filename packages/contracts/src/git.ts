@@ -116,6 +116,12 @@ export const GitCheckoutInput = Schema.Struct({
 });
 export type GitCheckoutInput = typeof GitCheckoutInput.Type;
 
+export const GitDeleteBranchInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  branch: TrimmedNonEmptyStringSchema,
+});
+export type GitDeleteBranchInput = typeof GitDeleteBranchInput.Type;
+
 export const GitPrepareMainlineMergeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   squash: Schema.optional(Schema.Boolean),

@@ -723,6 +723,15 @@ export function useBackendConnection() {
     );
   });
 
+  const gitDeleteBranch = useStableEvent(async (input: GitBranchInput): Promise<void> => {
+    await runBusyCommand("Deleting branch", () =>
+      request<void>(MOBILE_WS_METHODS.gitDeleteBranch, {
+        cwd: input.cwd,
+        branch: input.branch,
+      }),
+    );
+  });
+
   const gitCheckout = useStableEvent(async (input: GitBranchInput): Promise<void> => {
     await runBusyCommand("Checking out branch", () =>
       request<void>(MOBILE_WS_METHODS.gitCheckout, {
@@ -793,6 +802,7 @@ export function useBackendConnection() {
     gitListBranches: (input: GitWorkspaceInput) => gitListBranches(input),
     gitPull: (input: GitWorkspaceInput) => gitPull(input),
     gitCreateBranch: (input: GitBranchInput) => gitCreateBranch(input),
+    gitDeleteBranch: (input: GitBranchInput) => gitDeleteBranch(input),
     gitCheckout: (input: GitBranchInput) => gitCheckout(input),
     gitPrepareMainlineMerge: (input: GitPrepareMainlineMergeInput) =>
       gitPrepareMainlineMerge(input),

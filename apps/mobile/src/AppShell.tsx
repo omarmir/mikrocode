@@ -1122,6 +1122,7 @@ function AppShellContent() {
     errorMessage,
     gitCheckout,
     gitCreateBranch,
+    gitDeleteBranch,
     gitListBranches,
     gitPrepareMainlineMerge,
     gitPull,
@@ -2062,6 +2063,19 @@ function AppShellContent() {
     await updateThreadBranch({ threadId: selectedThread.id, branch });
     await loadGitState(selectedWorkspaceRoot);
     showToast(`Checked out ${branch}`);
+  };
+
+  const handleDeleteBranch = async (branch: string) => {
+    if (!selectedWorkspaceRoot) {
+      return;
+    }
+
+    await gitDeleteBranch({ cwd: selectedWorkspaceRoot, branch });
+    if (gitBranchNameDraft.trim() === branch) {
+      setGitBranchNameDraft("");
+    }
+    await loadGitState(selectedWorkspaceRoot);
+    showToast(`Deleted ${branch}`);
   };
 
   const handlePrepareMainlineMerge = async () => {
@@ -3138,30 +3152,40 @@ function AppShellContent() {
               <View style={styles.selectionList}>
                 {localBranches.length > 0 ? (
                   localBranches.map((branch: GitBranch) => (
-                    <Pressable
+                    <SwipeDismissRow
+                      actionDisabled={!canRunGitOperations || branch.current}
                       key={branch.name}
-                      disabled={!canRunGitOperations || branch.current}
+                      onAction={() => {
+                        return handleDeleteBranch(branch.name);
+                      }}
                       onPress={() => {
                         void handleCheckoutBranch(branch.name);
                       }}
-                      style={[
-                        styles.selectionRow,
-                        branch.current && styles.selectionRowCurrent,
-                        (!canRunGitOperations || branch.current) && styles.buttonDisabled,
-                      ]}
                     >
-                      <View style={styles.selectionRowCopy}>
-                        <View style={styles.selectionRowHeading}>
-                          <Text style={styles.selectionRowTitle}>{branch.name}</Text>
-                          {branch.current ? (
-                            <Text style={styles.selectionRowCurrentTag}>Current</Text>
-                          ) : null}
+                      <View
+                        style={[
+                          styles.selectionRow,
+                          branch.current && styles.selectionRowCurrent,
+                          (!canRunGitOperations || branch.current) && styles.buttonDisabled,
+                        ]}
+                      >
+                        <View style={styles.selectionRowCopy}>
+                          <View style={styles.selectionRowHeading}>
+                            <Text style={styles.selectionRowTitle}>{branch.name}</Text>
+                            {branch.current ? (
+                              <Text style={styles.selectionRowCurrentTag}>Current</Text>
+                            ) : null}
+                          </View>
+                          <Text style={styles.selectionRowMeta}>
+                            {branch.current
+                              ? "Current branch"
+                              : branch.isDefault
+                                ? "Default branch"
+                                : "Tap to check out or swipe to delete"}
+                          </Text>
                         </View>
-                        <Text style={styles.selectionRowMeta}>
-                          {branch.isDefault ? "Default branch" : "Tap to check out"}
-                        </Text>
                       </View>
-                    </Pressable>
+                    </SwipeDismissRow>
                   ))
                 ) : (
                   <Text style={styles.helperText}>
