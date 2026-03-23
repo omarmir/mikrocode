@@ -17,6 +17,7 @@ import {
   type OrchestrationReadModel,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  type ProviderRuntimeTurnCompletedEvent,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   ProjectId,
   type ServerAppNotification,
@@ -57,7 +58,7 @@ import { listWorkspaceDirectories, searchWorkspaceEntries } from "./workspaceEnt
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor";
-import type { ProviderService } from "./provider/Services/ProviderService";
+import { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { ServerConfig } from "./config";
@@ -331,11 +332,58 @@ function resolveNotificationContext(
   return { project, thread };
 }
 
-function buildTerminalTurnNotification(
+export function buildRuntimeTurnNotification(
+  event: ProviderRuntimeTurnCompletedEvent,
+  readModel: OrchestrationReadModel,
+): ServerAppNotification | null {
+  const turnId = event.turnId;
+  if (!turnId) {
+    return null;
+  }
+
+  switch (event.payload.state) {
+    case "interrupted":
+    case "cancelled":
+      return null;
+    case "completed":
+    case "failed":
+      break;
+  }
+
+  const context = resolveNotificationContext(event.threadId, readModel);
+  if (!context) {
+    return null;
+  }
+  const { project, thread } = context;
+
+  const kind = event.payload.state === "failed" ? "turn.error" : "turn.completed";
+  const message =
+    kind === "turn.error"
+      ? truncateNotificationText(
+          event.payload.errorMessage ??
+            thread.session?.lastError ??
+            "Turn failed before the session could recover.",
+          PUSHOVER_MESSAGE_MAX_CHARS,
+        )
+      : "Turn completed";
+
+  return {
+    notificationId: `notification:${turnId}:${kind}:${event.eventId}`,
+    kind,
+    projectId: project.id,
+    threadId: thread.id,
+    turnId,
+    title: buildScopedThreadTitle(project.title, thread.title),
+    message,
+    createdAt: event.createdAt,
+  };
+}
+
+export function buildDomainNotification(
   event: OrchestrationEvent,
   readModel: OrchestrationReadModel,
 ): ServerAppNotification | null {
-  if (event.type !== "thread.turn-diff-completed" && event.type !== "thread.session-set") {
+  if (event.type !== "thread.session-set" && event.type !== "thread.activity-appended") {
     return null;
   }
 
@@ -345,69 +393,30 @@ function buildTerminalTurnNotification(
   }
   const { project, thread } = context;
 
-  if (event.type === "thread.turn-diff-completed") {
-    if (event.payload.status === "missing") {
+  if (event.type === "thread.session-set") {
+    if (event.payload.session.status !== "error" || event.payload.session.activeTurnId === null) {
       return null;
     }
 
-    const kind = event.payload.status === "error" ? "turn.error" : "turn.completed";
-    const message =
-      kind === "turn.error"
-        ? truncateNotificationText(
-            thread.session?.lastError ?? "Turn failed before the session could recover.",
-            PUSHOVER_MESSAGE_MAX_CHARS,
-          )
-        : "Turn completed";
-
     return {
-      notificationId: `notification:${event.payload.turnId}:${kind}:${event.sequence}`,
-      kind,
+      notificationId: `notification:${event.payload.session.activeTurnId}:turn.error:${event.sequence}`,
+      kind: "turn.error",
       projectId: project.id,
       threadId: thread.id,
-      turnId: event.payload.turnId,
+      turnId: event.payload.session.activeTurnId,
       title: buildScopedThreadTitle(project.title, thread.title),
-      message,
+      message: truncateNotificationText(
+        event.payload.session.lastError ?? "Provider session error",
+        PUSHOVER_MESSAGE_MAX_CHARS,
+      ),
       createdAt: event.occurredAt,
     };
-  }
-
-  if (event.payload.session.status !== "error" || event.payload.session.activeTurnId === null) {
-    return null;
-  }
-
-  return {
-    notificationId: `notification:${event.payload.session.activeTurnId}:turn.error:${event.sequence}`,
-    kind: "turn.error",
-    projectId: project.id,
-    threadId: thread.id,
-    turnId: event.payload.session.activeTurnId,
-    title: buildScopedThreadTitle(project.title, thread.title),
-    message: truncateNotificationText(
-      event.payload.session.lastError ?? "Provider session error",
-      PUSHOVER_MESSAGE_MAX_CHARS,
-    ),
-    createdAt: event.occurredAt,
-  };
-}
-
-function buildUserInputRequestedNotification(
-  event: OrchestrationEvent,
-  readModel: OrchestrationReadModel,
-): ServerAppNotification | null {
-  if (event.type !== "thread.activity-appended") {
-    return null;
   }
 
   const activity = event.payload.activity;
   if (activity.kind !== "user-input.requested") {
     return null;
   }
-
-  const context = resolveNotificationContext(event.aggregateId, readModel);
-  if (!context) {
-    return null;
-  }
-  const { project, thread } = context;
 
   const requestId = readPayloadString(activity.payload, "requestId") ?? activity.id;
   const turnId =
@@ -460,6 +469,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const git = yield* GitCore;
   const httpClient = yield* HttpClient.HttpClient;
   const notificationSettings = yield* NotificationSettingsService;
+  const providerService = yield* ProviderService;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
@@ -596,26 +606,50 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     yield* deliverServerNotification(notification).pipe(Effect.asVoid);
   });
 
-  const maybeDeliverServerNotification = Effect.fnUntraced(function* (event: OrchestrationEvent) {
+  const maybeDeliverDomainNotification = Effect.fnUntraced(function* (event: OrchestrationEvent) {
     const settings = yield* notificationSettings.getSettings;
     if (!settings.enabled) {
       return;
     }
 
     const readModel = yield* orchestrationEngine.getReadModel();
-    const notification =
-      buildTerminalTurnNotification(event, readModel) ??
-      buildUserInputRequestedNotification(event, readModel);
+    const notification = buildDomainNotification(event, readModel);
     if (!notification) {
       return;
     }
 
     const deliveryEffect =
-      notification.kind === "turn.completed" || notification.kind === "turn.error"
+      notification.kind === "turn.error"
         ? deliverTerminalTurnNotification(notification)
         : deliverServerNotification(notification).pipe(Effect.asVoid);
 
     yield* deliveryEffect.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to deliver server notification", {
+          notificationId: notification.notificationId,
+          turnId: notification.turnId,
+          kind: notification.kind,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+  });
+
+  const maybeDeliverRuntimeTurnNotification = Effect.fnUntraced(function* (
+    event: ProviderRuntimeTurnCompletedEvent,
+  ) {
+    const settings = yield* notificationSettings.getSettings;
+    if (!settings.enabled) {
+      return;
+    }
+
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const notification = buildRuntimeTurnNotification(event, readModel);
+    if (!notification) {
+      return;
+    }
+
+    yield* deliverTerminalTurnNotification(notification).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("failed to deliver server notification", {
           notificationId: notification.notificationId,
@@ -849,12 +883,28 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         .pipe(
           Effect.tap(() =>
             Scope.provide(
-              maybeDeliverServerNotification(event).pipe(Effect.forkScoped, Effect.asVoid),
+              maybeDeliverDomainNotification(event).pipe(Effect.forkScoped, Effect.asVoid),
               subscriptionsScope,
             ),
           ),
         ),
     ).pipe(Effect.forkScoped),
+    subscriptionsScope,
+  );
+
+  yield* Scope.provide(
+    Stream.runForEach(providerService.streamEvents, (event) => {
+      if (event.type !== "turn.completed") {
+        return Effect.void;
+      }
+
+      // Runtime turn completion is the only reliable terminal signal for
+      // notifications. Checkpoint/diff events can finalize earlier.
+      return Scope.provide(
+        maybeDeliverRuntimeTurnNotification(event).pipe(Effect.forkScoped, Effect.asVoid),
+        subscriptionsScope,
+      );
+    }).pipe(Effect.forkScoped),
     subscriptionsScope,
   );
 
