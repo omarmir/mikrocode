@@ -30,6 +30,7 @@
     "start:marketing": "turbo run preview --filter=@t3tools/marketing",
     "build": "turbo run build",
     "build:marketing": "turbo run build --filter=@t3tools/marketing",
+    "build:mobile:apk": "bash scripts/build-mobile-apk.sh",
     "typecheck": "turbo run typecheck",
     "lint": "oxlint --report-unused-disable-directives",
     "test": "turbo run test",
