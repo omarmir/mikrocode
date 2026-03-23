@@ -28,6 +28,7 @@ export const MOBILE_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getSnapshot: "orchestration.getSnapshot",
   projectsCreateDirectory: "projects.createDirectory",
+  projectsListDirectory: "projects.listDirectory",
   projectsSearchEntries: "projects.searchEntries",
   gitCheckout: "git.checkout",
   gitCreateBranch: "git.createBranch",
@@ -118,7 +119,7 @@ export interface DeleteThreadInput {
   readonly threadId: string;
 }
 
-export interface SearchDirectoryInput {
+export interface ListDirectoryInput {
   readonly cwd: string;
 }
 

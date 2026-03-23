@@ -39,9 +39,9 @@ import {
   type GitRunStackedActionInput,
   type GitWorkspaceInput,
   type InterruptTurnInput,
+  type ListDirectoryInput,
   type PushMessage,
   type RpcResponse,
-  type SearchDirectoryInput,
   type SendTurnInput,
   type SendTestNotificationInput,
   type SendTestNotificationResult,
@@ -916,22 +916,26 @@ export function useBackendConnection() {
     );
   });
 
-  const searchDirectory = useStableEvent(
-    async (input: SearchDirectoryInput): Promise<DirectoryListing> => {
-      const result = await runBusyCommand("Loading directories", () =>
-        request<{ entries: ProjectEntry[]; truncated: boolean }>(
-          MOBILE_WS_METHODS.projectsSearchEntries,
+  const listDirectory = useStableEvent(
+    async (input: ListDirectoryInput): Promise<DirectoryListing> => {
+      let result: { entries: ProjectEntry[]; truncated: boolean };
+      try {
+        result = await request<{ entries: ProjectEntry[]; truncated: boolean }>(
+          MOBILE_WS_METHODS.projectsListDirectory,
           {
             cwd: input.cwd,
-            query: ".",
-            limit: 200,
           },
-        ),
-      );
+        );
+      } catch (error) {
+        setErrorMessage(
+          error instanceof Error ? error.message : "Failed to load directories from the backend.",
+        );
+        throw error;
+      }
 
       return {
         cwd: input.cwd,
-        entries: result.entries.filter((entry) => entry.parentPath === undefined),
+        entries: result.entries,
         truncated: result.truncated,
       };
     },
@@ -1068,7 +1072,7 @@ export function useBackendConnection() {
     respondToApproval: (input: ApprovalResponseInput) => respondToApproval(input),
     respondToUserInput: (input: UserInputResponseInput) => respondToUserInput(input),
     deleteThread: (input: DeleteThreadInput) => deleteThread(input),
-    searchDirectory: (input: SearchDirectoryInput) => searchDirectory(input),
+    listDirectory: (input: ListDirectoryInput) => listDirectory(input),
     createDirectory: (input: CreateDirectoryInput) => createDirectory(input),
     gitStatus: (input: GitWorkspaceInput) => gitStatus(input),
     gitListBranches: (input: GitWorkspaceInput) => gitListBranches(input),

@@ -5,12 +5,15 @@ import { runProcess } from "./processRunner";
 
 import {
   ProjectEntry,
+  ProjectListDirectoryInput,
+  ProjectListDirectoryResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
 } from "@t3tools/contracts";
 
 const WORKSPACE_CACHE_TTL_MS = 15_000;
 const WORKSPACE_CACHE_MAX_KEYS = 4;
+const DIRECTORY_LIST_MAX_ENTRIES = 2_000;
 const WORKSPACE_INDEX_MAX_ENTRIES = 25_000;
 const WORKSPACE_SCAN_READDIR_CONCURRENCY = 32;
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
@@ -534,9 +537,57 @@ async function getWorkspaceIndex(cwd: string): Promise<WorkspaceIndex> {
   return nextPromise;
 }
 
+async function isDirectoryListingCandidate(cwd: string, dirent: Dirent): Promise<boolean> {
+  if (!dirent.name || dirent.name === "." || dirent.name === ".." || dirent.name === ".git") {
+    return false;
+  }
+
+  if (dirent.isDirectory()) {
+    return true;
+  }
+
+  if (!dirent.isSymbolicLink()) {
+    return false;
+  }
+
+  try {
+    const entryStats = await fs.stat(path.join(cwd, dirent.name));
+    return entryStats.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 export function clearWorkspaceIndexCache(cwd: string): void {
   workspaceIndexCache.delete(cwd);
   inFlightWorkspaceIndexBuilds.delete(cwd);
+}
+
+export async function listWorkspaceDirectories(
+  input: ProjectListDirectoryInput,
+): Promise<ProjectListDirectoryResult> {
+  const dirents = await fs.readdir(input.cwd, { withFileTypes: true });
+  const directories = (
+    await mapWithConcurrency(
+      dirents,
+      WORKSPACE_SCAN_READDIR_CONCURRENCY,
+      async (dirent): Promise<ProjectEntry | null> =>
+        (await isDirectoryListingCandidate(input.cwd, dirent))
+          ? {
+              path: dirent.name,
+              kind: "directory",
+              parentPath: undefined,
+            }
+          : null,
+    )
+  )
+    .filter((entry): entry is ProjectEntry => entry !== null)
+    .toSorted((left, right) => left.path.localeCompare(right.path));
+
+  return {
+    entries: directories.slice(0, DIRECTORY_LIST_MAX_ENTRIES),
+    truncated: directories.length > DIRECTORY_LIST_MAX_ENTRIES,
+  };
 }
 
 export async function searchWorkspaceEntries(

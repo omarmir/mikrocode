@@ -27,6 +27,7 @@ import {
 } from "./git";
 import {
   ProjectCreateDirectoryInput,
+  ProjectListDirectoryInput,
   ProjectSearchEntriesInput,
   ProjectWriteFileInput,
 } from "./project";
@@ -40,6 +41,7 @@ import {
 } from "./server";
 
 export const WS_METHODS = {
+  projectsListDirectory: "projects.listDirectory",
   projectsSearchEntries: "projects.searchEntries",
   projectsCreateDirectory: "projects.createDirectory",
   projectsWriteFile: "projects.writeFile",
@@ -86,6 +88,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(ORCHESTRATION_WS_METHODS.getTurnDiff, OrchestrationGetTurnDiffInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getFullThreadDiff, OrchestrationGetFullThreadDiffInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.replayEvents, OrchestrationReplayEventsInput),
+  tagRequestBody(WS_METHODS.projectsListDirectory, ProjectListDirectoryInput),
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
   tagRequestBody(WS_METHODS.projectsCreateDirectory, ProjectCreateDirectoryInput),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),

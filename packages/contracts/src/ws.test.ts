@@ -73,6 +73,19 @@ it.effect("accepts git.preparePullRequestThread requests", () =>
   }),
 );
 
+it.effect("accepts projects.listDirectory requests", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWebSocketRequest({
+      id: "req-dir-1",
+      body: {
+        _tag: WS_METHODS.projectsListDirectory,
+        cwd: "/repo",
+      },
+    });
+    assert.strictEqual(parsed.body._tag, WS_METHODS.projectsListDirectory);
+  }),
+);
+
 it.effect("accepts notification settings update requests", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeWebSocketRequest({

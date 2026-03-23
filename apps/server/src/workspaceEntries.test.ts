@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 
 import { afterEach, assert, describe, it, vi } from "vitest";
 
-import { searchWorkspaceEntries } from "./workspaceEntries";
+import { listWorkspaceDirectories, searchWorkspaceEntries } from "./workspaceEntries";
 
 const tempDirs: string[] = [];
 
@@ -54,6 +54,21 @@ describe("searchWorkspaceEntries", () => {
     assert.include(paths, "README.md");
     assert.isFalse(paths.some((entryPath) => entryPath.startsWith(".git")));
     assert.isFalse(paths.some((entryPath) => entryPath.startsWith("node_modules")));
+    assert.isFalse(result.truncated);
+  });
+
+  it("lists direct filesystem directories even when a git workspace has empty folders", async () => {
+    const cwd = makeTempDir("t3code-workspace-list-directories-");
+    runGit(cwd, ["init"]);
+    fs.mkdirSync(path.join(cwd, "empty-folder"));
+    fs.mkdirSync(path.join(cwd, "nested", "child"), { recursive: true });
+    writeFile(cwd, "src/index.ts", "export {};");
+
+    const result = await listWorkspaceDirectories({ cwd });
+    const paths = result.entries.map((entry) => entry.path);
+
+    assert.sameMembers(paths, ["empty-folder", "nested", "src"]);
+    assert.isTrue(result.entries.every((entry) => entry.kind === "directory"));
     assert.isFalse(result.truncated);
   });
 

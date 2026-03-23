@@ -5,6 +5,11 @@ const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
 const PROJECT_WRITE_FILE_PATH_MAX_LENGTH = 512;
 const PROJECT_CREATE_DIRECTORY_PATH_MAX_LENGTH = 512;
 
+export const ProjectListDirectoryInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+});
+export type ProjectListDirectoryInput = typeof ProjectListDirectoryInput.Type;
+
 export const ProjectSearchEntriesInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   query: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
@@ -21,10 +26,15 @@ export const ProjectEntry = Schema.Struct({
 });
 export type ProjectEntry = typeof ProjectEntry.Type;
 
-export const ProjectSearchEntriesResult = Schema.Struct({
+const ProjectEntriesResultFields = {
   entries: Schema.Array(ProjectEntry),
   truncated: Schema.Boolean,
-});
+} as const;
+
+export const ProjectListDirectoryResult = Schema.Struct(ProjectEntriesResultFields);
+export type ProjectListDirectoryResult = typeof ProjectListDirectoryResult.Type;
+
+export const ProjectSearchEntriesResult = Schema.Struct(ProjectEntriesResultFields);
 export type ProjectSearchEntriesResult = typeof ProjectSearchEntriesResult.Type;
 
 export const ProjectWriteFileInput = Schema.Struct({

@@ -1357,12 +1357,12 @@ function AppShellContent() {
     getConversationCapabilities,
     interruptTurn,
     lastPushSequence,
+    listDirectory,
     pendingServerResponseThreadIds,
     refreshSnapshot,
     respondToApproval,
     respondToUserInput,
     resolvedWebSocketUrl,
-    searchDirectory,
     sendTurn,
     sendTestNotification,
     serverConfig,
@@ -1434,6 +1434,8 @@ function AppShellContent() {
   const [directoryCwd, setDirectoryCwd] = useState<string | null>(null);
   const [directoryEntries, setDirectoryEntries] = useState<ProjectEntry[]>([]);
   const [directoryTruncated, setDirectoryTruncated] = useState(false);
+  const [isLoadingDirectory, setIsLoadingDirectory] = useState(false);
+  const [isProjectBuilderMutating, setIsProjectBuilderMutating] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [gitRepoStatus, setGitRepoStatus] = useState<GitStatusResult | null>(null);
   const [gitBranches, setGitBranches] = useState<GitListBranchesResult | null>(null);
@@ -1453,6 +1455,7 @@ function AppShellContent() {
   const deviceNotificationChannelReadyRef = useRef(false);
   const messagesScrollRef = useRef<ScrollView | null>(null);
   const processingServerNotificationRef = useRef(false);
+  const directoryLoadSequenceRef = useRef(0);
   const waitingIndicatorMotion = useRef(new Animated.Value(0)).current;
 
   const allProjects = sortProjects(snapshot?.projects ?? []);
@@ -1572,6 +1575,9 @@ function AppShellContent() {
     pendingApprovalRequest === null &&
     pendingUserInputRequest === null &&
     (draft.trim().length > 0 || draftAttachments.length > 0);
+  const projectBuilderNavigationDisabled = isProjectBuilderMutating || busyAction !== null;
+  const projectBuilderSubmitDisabled =
+    isProjectBuilderMutating || isLoadingDirectory || busyAction !== null;
 
   useEffect(() => {
     if (sidebarPersistent) {
@@ -1862,6 +1868,7 @@ function AppShellContent() {
   };
 
   const openProjectBuilder = () => {
+    directoryLoadSequenceRef.current += 1;
     clearError();
     setProjectBuilderRoot(serverDirectoryHint.trim() || null);
     setNewFolderName("");
@@ -1869,13 +1876,18 @@ function AppShellContent() {
     setDirectoryCwd(null);
     setDirectoryEntries([]);
     setDirectoryTruncated(false);
+    setIsLoadingDirectory(false);
+    setIsProjectBuilderMutating(false);
     setProjectBuilderOpen(true);
   };
 
   const closeProjectBuilder = () => {
+    directoryLoadSequenceRef.current += 1;
     setProjectBuilderOpen(false);
     setProjectBuilderRoot(null);
     setNewFolderName("");
+    setIsLoadingDirectory(false);
+    setIsProjectBuilderMutating(false);
   };
 
   const navPanelPanResponder = PanResponder.create({
@@ -2065,13 +2077,28 @@ function AppShellContent() {
     }
   };
 
-  const loadDirectory = async (cwd: string) => {
-    const listing = await searchDirectory({ cwd });
-    setDirectoryCwd(listing.cwd);
-    setDirectoryEntries(listing.entries.filter((entry) => entry.kind === "directory"));
-    setDirectoryTruncated(listing.truncated);
-    setProjectTitleDraft(basenameOf(listing.cwd));
-  };
+  const loadDirectory = useCallback(
+    async (cwd: string) => {
+      const nextSequence = directoryLoadSequenceRef.current + 1;
+      directoryLoadSequenceRef.current = nextSequence;
+      setIsLoadingDirectory(true);
+      try {
+        const listing = await listDirectory({ cwd });
+        if (directoryLoadSequenceRef.current !== nextSequence) {
+          return;
+        }
+        setDirectoryCwd(listing.cwd);
+        setDirectoryEntries(listing.entries.filter((entry) => entry.kind === "directory"));
+        setDirectoryTruncated(listing.truncated);
+        setProjectTitleDraft(basenameOf(listing.cwd));
+      } finally {
+        if (directoryLoadSequenceRef.current === nextSequence) {
+          setIsLoadingDirectory(false);
+        }
+      }
+    },
+    [listDirectory],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -2111,23 +2138,8 @@ function AppShellContent() {
       return;
     }
 
-    let cancelled = false;
-
-    void (async () => {
-      const listing = await searchDirectory({ cwd: nextRoot });
-      if (cancelled) {
-        return;
-      }
-      setDirectoryCwd(listing.cwd);
-      setDirectoryEntries(listing.entries.filter((entry) => entry.kind === "directory"));
-      setDirectoryTruncated(listing.truncated);
-      setProjectTitleDraft(basenameOf(listing.cwd));
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [directoryCwd, projectBuilderOpen, projectBuilderRoot, searchDirectory]);
+    void loadDirectory(nextRoot);
+  }, [directoryCwd, loadDirectory, projectBuilderOpen, projectBuilderRoot]);
 
   useEffect(() => {
     setConversationCapabilities((current) =>
@@ -2144,7 +2156,7 @@ function AppShellContent() {
 
   const handleResetProjectDirectory = async () => {
     const nextRoot = projectBuilderRoot?.trim() ?? "";
-    if (!nextRoot) {
+    if (!nextRoot || projectBuilderNavigationDisabled) {
       return;
     }
     await loadDirectory(nextRoot);
@@ -2152,7 +2164,7 @@ function AppShellContent() {
 
   const handleOpenParentDirectory = async () => {
     const source = directoryCwd?.trim();
-    if (!source) {
+    if (!source || projectBuilderNavigationDisabled) {
       return;
     }
 
@@ -2160,33 +2172,43 @@ function AppShellContent() {
   };
 
   const handleCreateFolder = async () => {
-    if (!directoryCwd || !newFolderName.trim()) {
+    if (!directoryCwd || !newFolderName.trim() || projectBuilderSubmitDisabled) {
       return;
     }
 
-    await createDirectory({
-      cwd: directoryCwd,
-      relativePath: newFolderName.trim(),
-    });
-    setNewFolderName("");
-    await loadDirectory(directoryCwd);
+    setIsProjectBuilderMutating(true);
+    try {
+      await createDirectory({
+        cwd: directoryCwd,
+        relativePath: newFolderName.trim(),
+      });
+      setNewFolderName("");
+      await loadDirectory(directoryCwd);
+    } finally {
+      setIsProjectBuilderMutating(false);
+    }
   };
 
   const handleCreateProject = async () => {
     const workspaceRoot = directoryCwd?.trim() ?? "";
-    if (!workspaceRoot) {
+    if (!workspaceRoot || projectBuilderSubmitDisabled) {
       return;
     }
 
-    const projectId = await createProject({
-      title: projectTitleDraft.trim() || basenameOf(workspaceRoot),
-      workspaceRoot,
-      defaultModel: FALLBACK_MODEL,
-    });
+    setIsProjectBuilderMutating(true);
+    try {
+      const projectId = await createProject({
+        title: projectTitleDraft.trim() || basenameOf(workspaceRoot),
+        workspaceRoot,
+        defaultModel: FALLBACK_MODEL,
+      });
 
-    setSelectedProjectId(projectId);
-    setSelectedThreadId(null);
-    closeProjectBuilder();
+      setSelectedProjectId(projectId);
+      setSelectedThreadId(null);
+      closeProjectBuilder();
+    } finally {
+      setIsProjectBuilderMutating(false);
+    }
   };
 
   const handleCreateConversation = async (projectOverride?: OrchestrationProject | null) => {
@@ -4484,7 +4506,7 @@ function AppShellContent() {
         <View style={styles.inlineButtonRow}>
           <ActionButton
             compact
-            disabled={!projectBuilderRoot?.trim() || busyAction !== null}
+            disabled={!projectBuilderRoot?.trim() || projectBuilderNavigationDisabled}
             emphasis="secondary"
             label="Server cwd"
             onPress={() => {
@@ -4493,7 +4515,7 @@ function AppShellContent() {
           />
           <ActionButton
             compact
-            disabled={!directoryCwd?.trim() || busyAction !== null}
+            disabled={!directoryCwd?.trim() || projectBuilderNavigationDisabled}
             emphasis="ghost"
             label="Parent"
             onPress={() => {
@@ -4502,7 +4524,13 @@ function AppShellContent() {
           />
         </View>
 
-        <View style={[styles.directoryBrowser, styles.projectPickerBrowser]}>
+        <ScrollView
+          key={directoryCwd ?? projectBuilderRoot ?? "directory-browser"}
+          contentContainerStyle={styles.directoryBrowserContent}
+          keyboardShouldPersistTaps="handled"
+          nestedScrollEnabled
+          style={[styles.directoryBrowser, styles.projectPickerBrowser]}
+        >
           {directoryEntries.length > 0 ? (
             directoryEntries.map((entry) => {
               const nextPath = directoryCwd
@@ -4532,10 +4560,12 @@ function AppShellContent() {
               </Text>
             </View>
           )}
-        </View>
+        </ScrollView>
 
         {directoryTruncated ? (
-          <Text style={styles.helperText}>Directory index truncated to 200 entries.</Text>
+          <Text style={styles.helperText}>
+            Directory listing truncated. Keep drilling down to narrow the folder set.
+          </Text>
         ) : null}
 
         <View style={styles.projectPickerFieldGroup}>
@@ -4550,7 +4580,7 @@ function AppShellContent() {
             />
             <View style={styles.projectPickerActionCell}>
               <ActionButton
-                disabled={!directoryCwd || !newFolderName.trim() || busyAction !== null}
+                disabled={!directoryCwd || !newFolderName.trim() || projectBuilderSubmitDisabled}
                 emphasis="ghost"
                 label="mkdir"
                 onPress={() => {
@@ -4576,7 +4606,7 @@ function AppShellContent() {
       <View style={styles.projectPickerFooter}>
         <ActionButton emphasis="secondary" label="Cancel" onPress={closeProjectBuilder} />
         <ActionButton
-          disabled={!directoryCwd?.trim() || busyAction !== null}
+          disabled={!directoryCwd?.trim() || projectBuilderSubmitDisabled}
           label="Mount folder"
           onPress={() => {
             void handleCreateProject();
@@ -5021,18 +5051,24 @@ function createStyles(theme: AppTheme) {
       borderWidth: 1,
       gap: 0,
       maxHeight: 220,
+      overflow: "hidden",
       padding: 0,
+    },
+    directoryBrowserContent: {
+      flexGrow: 1,
     },
     directoryRow: {
       backgroundColor: "transparent",
       borderBottomColor: TERMINAL_BORDER,
       borderBottomWidth: 1,
       gap: 2,
+      minWidth: 0,
       paddingHorizontal: 10,
       paddingVertical: 8,
     },
     directoryTitle: {
       color: TERMINAL_TEXT,
+      flexShrink: 1,
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 13,
       fontWeight: "600",
