@@ -30,6 +30,7 @@ import Migration0015 from "./Migrations/015_ProjectionTurnsSourceProposedPlan.ts
 import Migration0016 from "./Migrations/016_ProjectionTurnsDispatchMode.ts";
 import Migration0017 from "./Migrations/017_ServerNotificationSettings.ts";
 import Migration0018 from "./Migrations/018_ServerNotificationSettingsBackfill.ts";
+import Migration0019 from "./Migrations/019_ServerNotificationSettingsEnabled.ts";
 import { Effect } from "effect";
 
 /**
@@ -61,6 +62,7 @@ const loader = Migrator.fromRecord({
   "16_ProjectionTurnsDispatchMode": Migration0016,
   "17_ServerNotificationSettings": Migration0017,
   "18_ServerNotificationSettingsBackfill": Migration0018,
+  "19_ServerNotificationSettingsEnabled": Migration0019,
 });
 
 /**

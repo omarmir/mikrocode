@@ -1484,6 +1484,7 @@ function AppShellContent() {
   const draftAttachments = selectedThread ? (threadDraftAttachments[selectedThread.id] ?? []) : [];
   const isConnected = status === "connected";
   const providers = serverConfig?.providers ?? [];
+  const notificationsEnabled = serverConfig?.notifications.enabled ?? true;
   const notificationsConfigured = serverConfig?.notifications.pushover.configured ?? false;
   const supportsDeviceNotifications = !(
     Platform.OS === "android" && Constants.appOwnership === ANDROID_EXPO_GO_APP_OWNERSHIP
@@ -2303,43 +2304,78 @@ function AppShellContent() {
     }, 1800);
   };
 
-  const handleSaveNotificationSettings = async (input?: {
+  const resolveNotificationSettingsInput = (input?: {
+    readonly enabled?: boolean;
+    readonly appToken: string | null;
+    readonly userKey: string | null;
+  }) => ({
+    enabled: input?.enabled ?? serverConfig?.notifications.enabled ?? true,
+    appToken:
+      input?.appToken ??
+      (pushoverAppTokenDraft.trim().length > 0 ? pushoverAppTokenDraft.trim() : null),
+    userKey:
+      input?.userKey ??
+      (pushoverUserKeyDraft.trim().length > 0 ? pushoverUserKeyDraft.trim() : null),
+  });
+
+  const saveNotificationSettings = async (input?: {
+    readonly enabled?: boolean;
     readonly appToken: string | null;
     readonly userKey: string | null;
   }) => {
-    const appToken =
-      input?.appToken ??
-      (pushoverAppTokenDraft.trim().length > 0 ? pushoverAppTokenDraft.trim() : null);
-    const userKey =
-      input?.userKey ??
-      (pushoverUserKeyDraft.trim().length > 0 ? pushoverUserKeyDraft.trim() : null);
+    if (!serverConfig) {
+      throw new Error("Wait for the server configuration before updating notifications.");
+    }
 
-    const notifications = await setNotificationSettings({
+    const nextSettings = resolveNotificationSettingsInput(input);
+
+    return setNotificationSettings({
+      enabled: nextSettings.enabled,
       pushover: {
-        appToken,
-        userKey,
+        appToken: nextSettings.appToken,
+        userKey: nextSettings.userKey,
       },
     });
+  };
+
+  const handleSaveNotificationSettings = async (input?: {
+    readonly enabled?: boolean;
+    readonly appToken: string | null;
+    readonly userKey: string | null;
+  }) => {
+    const nextSettings = resolveNotificationSettingsInput(input);
+    const notifications = await saveNotificationSettings(input);
 
     const deviceNotificationsEnabled = await ensureDeviceNotificationsReady(true).catch(
       () => false,
     );
-    if (appToken === null) {
+    if (nextSettings.appToken === null) {
       setPushoverAppTokenDraft("");
     }
-    if (userKey === null) {
+    if (nextSettings.userKey === null) {
       setPushoverUserKeyDraft("");
     }
 
     showToast(
-      notifications.pushover.configured
-        ? deviceNotificationsEnabled
-          ? "Notification delivery updated"
-          : supportsDeviceNotifications
-            ? "Saved. Device alerts are disabled, so missed app delivery falls back to Pushover."
-            : "Saved. Android Expo Go cannot test device alerts, so missed app delivery falls back to Pushover."
-        : "Notification settings cleared",
+      !notifications.enabled
+        ? "Notifications muted"
+        : notifications.pushover.configured
+          ? deviceNotificationsEnabled
+            ? "Notification delivery updated"
+            : supportsDeviceNotifications
+              ? "Saved. Device alerts are disabled, so missed app delivery falls back to Pushover."
+              : "Saved. Android Expo Go cannot test device alerts, so missed app delivery falls back to Pushover."
+          : "Notification settings cleared",
     );
+  };
+
+  const handleSetNotificationsEnabled = async (enabled: boolean) => {
+    const notifications = await saveNotificationSettings({
+      enabled,
+      appToken: serverConfig?.notifications.pushover.appToken ?? null,
+      userKey: serverConfig?.notifications.pushover.userKey ?? null,
+    });
+    showToast(notifications.enabled ? "Notifications enabled" : "Notifications muted");
   };
 
   const handleSendTestNotification = async (mode: "auto" | "pushover") => {
@@ -3132,6 +3168,29 @@ function AppShellContent() {
             <MetaRow label="Bootstrap project" value={welcome?.projectName ?? "Unavailable"} />
             <MetaRow label="Snapshot sequence" value={snapshotSequenceLabel} />
             <MetaRow label="Busy action" value={busyAction ?? "Idle"} />
+          </View>
+        </View>
+
+        <View style={styles.flatSection}>
+          <Text style={styles.sectionEyebrow}>Alerts</Text>
+          <Text style={styles.sectionTitle}>Notifications</Text>
+          <View style={styles.switchRow}>
+            <Text style={styles.metaValue}>Automatic alerts</Text>
+            <Switch
+              disabled={!isConnected || busyAction !== null || !serverConfig}
+              onValueChange={(value) => {
+                void handleSetNotificationsEnabled(value);
+              }}
+              trackColor={{ false: TERMINAL_BORDER, true: TERMINAL_ACCENT_SOFT }}
+              value={notificationsEnabled}
+            />
+          </View>
+          <View style={styles.compactList}>
+            <MetaRow accent label="Status" value={notificationsEnabled ? "Enabled" : "Muted"} />
+            <MetaRow
+              label="Fallback"
+              value={notificationsConfigured ? "Pushover configured" : "App delivery only"}
+            />
           </View>
         </View>
       </View>
@@ -4271,6 +4330,17 @@ function AppShellContent() {
             sessions schedule a device notification, and Pushover is used only when the app does not
             confirm delivery in time.
           </Text>
+          <View style={styles.switchRow}>
+            <Text style={styles.metaValue}>Automatic alerts</Text>
+            <Switch
+              disabled={!isConnected || busyAction !== null || !serverConfig}
+              onValueChange={(value) => {
+                void handleSetNotificationsEnabled(value);
+              }}
+              trackColor={{ false: TERMINAL_BORDER, true: TERMINAL_ACCENT_SOFT }}
+              value={notificationsEnabled}
+            />
+          </View>
           <Text style={styles.helperText}>
             Test alert follows the normal app-first flow. Test Pushover bypasses app delivery and
             sends the server fallback directly.
@@ -4301,6 +4371,7 @@ function AppShellContent() {
             style={styles.input}
             value={pushoverUserKeyDraft}
           />
+          <MetaRow accent label="Status" value={notificationsEnabled ? "Enabled" : "Muted"} />
           <MetaRow
             accent
             label="Fallback"

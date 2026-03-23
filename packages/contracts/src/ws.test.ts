@@ -79,6 +79,7 @@ it.effect("accepts notification settings update requests", () =>
       id: "req-notify-1",
       body: {
         _tag: WS_METHODS.serverSetNotificationSettings,
+        enabled: true,
         pushover: {
           appToken: "abcdefghijklmnopqrstuvwxyz1234",
           userKey: "1234567890abcdefghij1234567890",

@@ -64,7 +64,12 @@ export type ServerConversationCapabilities = typeof ServerConversationCapabiliti
 export const ServerNotificationDelivery = Schema.Literals(["toast", "device"]);
 export type ServerNotificationDelivery = typeof ServerNotificationDelivery.Type;
 
-export const ServerAppNotificationKind = Schema.Literals(["turn.completed", "turn.error", "test"]);
+export const ServerAppNotificationKind = Schema.Literals([
+  "turn.completed",
+  "turn.error",
+  "user-input.requested",
+  "test",
+]);
 export type ServerAppNotificationKind = typeof ServerAppNotificationKind.Type;
 
 export const ServerAppNotification = Schema.Struct({
@@ -114,16 +119,19 @@ export const ServerPushoverNotificationSettings = Schema.Struct({
 export type ServerPushoverNotificationSettings = typeof ServerPushoverNotificationSettings.Type;
 
 export const ServerNotificationSettings = Schema.Struct({
+  enabled: Schema.Boolean,
   pushover: ServerPushoverNotificationSettings,
 });
 export type ServerNotificationSettings = typeof ServerNotificationSettings.Type;
 
 export const ServerNotificationSettingsSummary = Schema.Struct({
+  enabled: Schema.Boolean,
   pushoverConfigured: Schema.Boolean,
 });
 export type ServerNotificationSettingsSummary = typeof ServerNotificationSettingsSummary.Type;
 
 export const ServerSetNotificationSettingsInput = Schema.Struct({
+  enabled: Schema.Boolean,
   pushover: Schema.Struct({
     appToken: Schema.NullOr(PushoverCredential),
     userKey: Schema.NullOr(PushoverCredential),

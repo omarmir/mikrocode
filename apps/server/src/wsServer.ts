@@ -283,15 +283,42 @@ function formatRequestFailure(cause: Cause.Cause<unknown>): string {
   return Cause.pretty(cause);
 }
 
-function buildTerminalTurnNotification(
-  event: OrchestrationEvent,
-  readModel: OrchestrationReadModel,
-): ServerAppNotification | null {
-  if (event.type !== "thread.turn-diff-completed" && event.type !== "thread.session-set") {
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readPayloadString(payload: unknown, key: string): string | null {
+  const record = asRecord(payload);
+  const value = record?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readFirstUserInputQuestion(payload: unknown): string | null {
+  const questions = asRecord(payload)?.questions;
+  if (!Array.isArray(questions)) {
     return null;
   }
 
-  const thread = readModel.threads.find((entry) => entry.id === event.aggregateId);
+  for (const question of questions) {
+    const prompt = readPayloadString(question, "question");
+    if (prompt !== null) {
+      return prompt;
+    }
+  }
+
+  return null;
+}
+
+function resolveNotificationContext(
+  threadId: string,
+  readModel: OrchestrationReadModel,
+): {
+  readonly project: OrchestrationReadModel["projects"][number];
+  readonly thread: OrchestrationReadModel["threads"][number];
+} | null {
+  const thread = readModel.threads.find((entry) => entry.id === threadId);
   if (!thread || thread.deletedAt !== null) {
     return null;
   }
@@ -300,6 +327,23 @@ function buildTerminalTurnNotification(
   if (!project || project.deletedAt !== null) {
     return null;
   }
+
+  return { project, thread };
+}
+
+function buildTerminalTurnNotification(
+  event: OrchestrationEvent,
+  readModel: OrchestrationReadModel,
+): ServerAppNotification | null {
+  if (event.type !== "thread.turn-diff-completed" && event.type !== "thread.session-set") {
+    return null;
+  }
+
+  const context = resolveNotificationContext(event.aggregateId, readModel);
+  if (!context) {
+    return null;
+  }
+  const { project, thread } = context;
 
   if (event.type === "thread.turn-diff-completed") {
     if (event.payload.status === "missing") {
@@ -343,6 +387,43 @@ function buildTerminalTurnNotification(
       PUSHOVER_MESSAGE_MAX_CHARS,
     ),
     createdAt: event.occurredAt,
+  };
+}
+
+function buildUserInputRequestedNotification(
+  event: OrchestrationEvent,
+  readModel: OrchestrationReadModel,
+): ServerAppNotification | null {
+  if (event.type !== "thread.activity-appended") {
+    return null;
+  }
+
+  const activity = event.payload.activity;
+  if (activity.kind !== "user-input.requested") {
+    return null;
+  }
+
+  const context = resolveNotificationContext(event.aggregateId, readModel);
+  if (!context) {
+    return null;
+  }
+  const { project, thread } = context;
+
+  const requestId = readPayloadString(activity.payload, "requestId") ?? activity.id;
+  const turnId =
+    activity.turnId ?? thread.latestTurn?.turnId ?? TurnId.makeUnsafe(`user-input:${requestId}`);
+  const prompt =
+    readFirstUserInputQuestion(activity.payload) ?? "Model is waiting for your response.";
+
+  return {
+    notificationId: `notification:${requestId}:user-input.requested:${event.sequence}`,
+    kind: "user-input.requested",
+    projectId: project.id,
+    threadId: thread.id,
+    turnId,
+    title: buildScopedThreadTitle(project.title, thread.title),
+    message: truncateNotificationText(prompt, PUSHOVER_MESSAGE_MAX_CHARS),
+    createdAt: activity.createdAt,
   };
 }
 
@@ -515,18 +596,28 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     yield* deliverServerNotification(notification).pipe(Effect.asVoid);
   });
 
-  const maybeDeliverTerminalTurnNotification = Effect.fnUntraced(function* (
-    event: OrchestrationEvent,
-  ) {
+  const maybeDeliverServerNotification = Effect.fnUntraced(function* (event: OrchestrationEvent) {
+    const settings = yield* notificationSettings.getSettings;
+    if (!settings.enabled) {
+      return;
+    }
+
     const readModel = yield* orchestrationEngine.getReadModel();
-    const notification = buildTerminalTurnNotification(event, readModel);
+    const notification =
+      buildTerminalTurnNotification(event, readModel) ??
+      buildUserInputRequestedNotification(event, readModel);
     if (!notification) {
       return;
     }
 
-    yield* deliverTerminalTurnNotification(notification).pipe(
+    const deliveryEffect =
+      notification.kind === "turn.completed" || notification.kind === "turn.error"
+        ? deliverTerminalTurnNotification(notification)
+        : deliverServerNotification(notification).pipe(Effect.asVoid);
+
+    yield* deliveryEffect.pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("failed to deliver terminal turn notification", {
+        Effect.logWarning("failed to deliver server notification", {
           notificationId: notification.notificationId,
           turnId: notification.turnId,
           kind: notification.kind,
@@ -758,7 +849,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         .pipe(
           Effect.tap(() =>
             Scope.provide(
-              maybeDeliverTerminalTurnNotification(event).pipe(Effect.forkScoped, Effect.asVoid),
+              maybeDeliverServerNotification(event).pipe(Effect.forkScoped, Effect.asVoid),
               subscriptionsScope,
             ),
           ),
@@ -983,6 +1074,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         yield* pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
           providers: yield* providerHealth.getStatuses,
           notifications: {
+            enabled: settings.enabled,
             pushoverConfigured: settings.pushover.configured,
           },
         });

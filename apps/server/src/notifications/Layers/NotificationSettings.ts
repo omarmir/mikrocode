@@ -11,6 +11,7 @@ import {
 } from "../Services/NotificationSettings.ts";
 
 const NotificationSettingsDbRow = Schema.Struct({
+  enabled: Schema.Number,
   appToken: Schema.NullOr(Schema.String),
   userKey: Schema.NullOr(Schema.String),
 });
@@ -20,10 +21,12 @@ const EmptySettingsRequest = Schema.Struct({});
 function toNotificationSettings(
   row: typeof NotificationSettingsDbRow.Type | null,
 ): ServerNotificationSettings {
+  const enabled = row?.enabled !== 0;
   const appToken = row?.appToken ?? null;
   const userKey = row?.userKey ?? null;
 
   return {
+    enabled,
     pushover: {
       appToken,
       userKey,
@@ -44,6 +47,7 @@ const makeNotificationSettingsService = Effect.gen(function* () {
     execute: () =>
       sql`
         SELECT
+          notifications_enabled AS "enabled",
           pushover_app_token AS "appToken",
           pushover_user_key AS "userKey"
         FROM server_notification_settings
@@ -53,26 +57,30 @@ const makeNotificationSettingsService = Effect.gen(function* () {
 
   const upsertNotificationSettingsRow = SqlSchema.void({
     Request: Schema.Struct({
+      enabled: Schema.Boolean,
       appToken: Schema.NullOr(Schema.String),
       userKey: Schema.NullOr(Schema.String),
       updatedAt: Schema.String,
     }),
-    execute: ({ appToken, userKey, updatedAt }) =>
+    execute: ({ enabled, appToken, userKey, updatedAt }) =>
       sql`
         INSERT INTO server_notification_settings (
           id,
+          notifications_enabled,
           pushover_app_token,
           pushover_user_key,
           updated_at
         )
         VALUES (
           1,
+          ${enabled ? 1 : 0},
           ${appToken},
           ${userKey},
           ${updatedAt}
         )
         ON CONFLICT (id)
         DO UPDATE SET
+          notifications_enabled = excluded.notifications_enabled,
           pushover_app_token = excluded.pushover_app_token,
           pushover_user_key = excluded.pushover_user_key,
           updated_at = excluded.updated_at
@@ -86,6 +94,7 @@ const makeNotificationSettingsService = Effect.gen(function* () {
 
   const setSettings: NotificationSettingsShape["setSettings"] = (input) =>
     upsertNotificationSettingsRow({
+      enabled: input.enabled,
       appToken: input.pushover.appToken,
       userKey: input.pushover.userKey,
       updatedAt: new Date().toISOString(),

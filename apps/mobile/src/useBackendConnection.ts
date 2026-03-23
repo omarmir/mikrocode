@@ -367,6 +367,7 @@ export function useBackendConnection() {
       const payload = message.data as {
         readonly providers?: ServerConfig["providers"];
         readonly notifications?: {
+          readonly enabled: boolean;
           readonly pushoverConfigured: boolean;
         };
       };
@@ -379,6 +380,7 @@ export function useBackendConnection() {
                 notifications: payload.notifications
                   ? {
                       ...current.notifications,
+                      enabled: payload.notifications.enabled,
                       pushover: {
                         ...current.notifications.pushover,
                         configured: payload.notifications.pushoverConfigured,
