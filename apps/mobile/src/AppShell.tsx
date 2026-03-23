@@ -753,10 +753,28 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
 }
 
-function readPayloadNumber(payload: unknown, key: string) {
+function readPayloadNumberish(payload: unknown, key: string) {
   const record = asRecord(payload);
   const value = record?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function readFirstPayloadNumberish(payloads: ReadonlyArray<unknown>, key: string): number | null {
+  for (const payload of payloads) {
+    const value = readPayloadNumberish(payload, key);
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  return null;
 }
 
 function readPayloadString(payload: unknown, key: string) {
@@ -1377,14 +1395,44 @@ function readRemainingContextPercent(usage: unknown): number | null {
     return null;
   }
 
+  const lastUsage = asRecord(normalizedUsage.last);
+  const totalUsage = asRecord(normalizedUsage.total);
+  const contextUsageSources = [normalizedUsage, lastUsage, totalUsage];
+  const directRemainingPercent =
+    readFirstPayloadNumberish(contextUsageSources, "remainingPercent") ??
+    readFirstPayloadNumberish(contextUsageSources, "remaining_percent") ??
+    readFirstPayloadNumberish(contextUsageSources, "contextLeftPercent") ??
+    readFirstPayloadNumberish(contextUsageSources, "context_left_percent");
+  if (directRemainingPercent !== null) {
+    const normalizedPercent =
+      directRemainingPercent > 0 && directRemainingPercent < 1
+        ? directRemainingPercent * 100
+        : directRemainingPercent;
+    return Math.max(0, Math.min(100, Math.round(normalizedPercent)));
+  }
+
+  const usedPercent =
+    readFirstPayloadNumberish(contextUsageSources, "usedPercent") ??
+    readFirstPayloadNumberish(contextUsageSources, "used_percent");
+  if (usedPercent !== null) {
+    const normalizedPercent = usedPercent > 0 && usedPercent < 1 ? usedPercent * 100 : usedPercent;
+    return Math.max(0, Math.min(100, Math.round(100 - normalizedPercent)));
+  }
+
   const totalTokens =
-    readPayloadNumber(normalizedUsage.total, "totalTokens") ??
-    readPayloadNumber(normalizedUsage.total, "total_tokens") ??
-    readPayloadNumber(normalizedUsage, "totalTokens") ??
-    readPayloadNumber(normalizedUsage, "total_tokens");
+    readFirstPayloadNumberish(contextUsageSources, "totalTokens") ??
+    readFirstPayloadNumberish(contextUsageSources, "total_tokens");
   const modelContextWindow =
-    readPayloadNumber(normalizedUsage, "modelContextWindow") ??
-    readPayloadNumber(normalizedUsage, "model_context_window");
+    readPayloadNumberish(normalizedUsage, "modelContextWindow") ??
+    readPayloadNumberish(normalizedUsage, "model_context_window");
+  const remainingTokens =
+    readFirstPayloadNumberish(contextUsageSources, "remainingTokens") ??
+    readFirstPayloadNumberish(contextUsageSources, "remaining_tokens");
+  if (remainingTokens !== null && modelContextWindow !== null && modelContextWindow > 0) {
+    const remainingPercent = (remainingTokens / modelContextWindow) * 100;
+    return Math.max(0, Math.min(100, Math.round(remainingPercent)));
+  }
+
   if (totalTokens === null || modelContextWindow === null || modelContextWindow <= 0) {
     return null;
   }

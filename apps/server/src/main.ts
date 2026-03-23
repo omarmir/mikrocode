@@ -66,8 +66,11 @@ const CliEnvConfig = Config.all({
   ),
 });
 
-const resolveBooleanFlag = (flag: Option.Option<boolean>, envValue: boolean) =>
-  Option.getOrElse(Option.filter(flag, Boolean), () => envValue);
+export const resolveBooleanFlag = (
+  flag: Option.Option<boolean>,
+  envValue: boolean | undefined,
+  defaultValue: boolean,
+) => Option.getOrElse(flag, () => envValue ?? defaultValue);
 
 const ServerConfigLive = (input: CliInput) =>
   Layer.effect(
@@ -99,11 +102,13 @@ const ServerConfigLive = (input: CliInput) =>
         authToken: Option.getOrUndefined(input.authToken) ?? env.authToken,
         autoBootstrapProjectFromCwd: resolveBooleanFlag(
           input.autoBootstrapProjectFromCwd,
-          env.autoBootstrapProjectFromCwd ?? true,
+          env.autoBootstrapProjectFromCwd,
+          false,
         ),
         logWebSocketEvents: resolveBooleanFlag(
           input.logWebSocketEvents,
-          env.logWebSocketEvents ?? false,
+          env.logWebSocketEvents,
+          false,
         ),
       } satisfies ServerConfigShape;
 
