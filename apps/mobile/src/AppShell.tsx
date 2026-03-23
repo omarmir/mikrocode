@@ -2705,7 +2705,7 @@ function AppShellContent() {
     }
   };
 
-  const handleKillRecentThread = async (threadId: string, isStopped: boolean) => {
+  const handleRemoveThread = async (threadId: string, isStopped: boolean) => {
     if (!isStopped) {
       await stopSession({ threadId });
     }
@@ -2715,6 +2715,18 @@ function AppShellContent() {
     setHiddenRecentThreadIds((current) =>
       current.includes(threadId) ? current : [...current, threadId],
     );
+  };
+
+  const handleRemoveSelectedThread = async () => {
+    if (!selectedThread) {
+      return;
+    }
+
+    const threadId = selectedThread.id;
+    const isStopped = selectedThread.session?.status === "stopped";
+
+    await handleRemoveThread(threadId, isStopped);
+    setSelectedThreadId((current) => (current === threadId ? null : current));
   };
 
   const handleDeleteProject = async (projectId: string) => {
@@ -3547,7 +3559,7 @@ function AppShellContent() {
                   actionDisabled={busyAction !== null}
                   key={thread.id}
                   onAction={() => {
-                    return handleKillRecentThread(thread.id, thread.session?.status === "stopped");
+                    return handleRemoveThread(thread.id, thread.session?.status === "stopped");
                   }}
                   onPress={() => {
                     handleSelectThread(thread.projectId, thread.id);
@@ -4169,18 +4181,35 @@ function AppShellContent() {
           </ScrollView>
         ) : null}
 
-        <TextInput
-          multiline
-          onChangeText={updateDraft}
-          onFocus={() => {
-            requestAnimationFrame(scrollConversationToEnd);
-          }}
-          placeholder="Type the next instruction..."
-          placeholderTextColor={TERMINAL_MUTED}
-          style={styles.composerInput}
-          textAlignVertical="top"
-          value={draft}
-        />
+        <View style={styles.composerInputRow}>
+          <TextInput
+            multiline
+            onChangeText={updateDraft}
+            onFocus={() => {
+              requestAnimationFrame(scrollConversationToEnd);
+            }}
+            placeholder="Type the next instruction..."
+            placeholderTextColor={TERMINAL_MUTED}
+            style={[styles.composerInput, styles.composerInputField]}
+            textAlignVertical="top"
+            value={draft}
+          />
+          <View style={styles.composerInlineSendAction}>
+            <ActionButton
+              disabled={!canSend}
+              label={
+                selectedTurnDispatchMode === "queue" && sessionBusy
+                  ? "Queue"
+                  : selectedTurnDispatchMode === "live" && sessionBusy
+                    ? "Send now"
+                    : "Send"
+              }
+              onPress={() => {
+                void handleSend();
+              }}
+            />
+          </View>
+        </View>
 
         <View style={styles.composerFooter}>
           <View style={styles.composerActionCluster}>
@@ -4240,19 +4269,13 @@ function AppShellContent() {
                 void stopSession({ threadId: selectedThread.id });
               }}
             />
-          </View>
-          <View style={styles.composerRunAction}>
             <ActionButton
-              disabled={!canSend}
-              label={
-                selectedTurnDispatchMode === "queue" && sessionBusy
-                  ? "Queue"
-                  : selectedTurnDispatchMode === "live" && sessionBusy
-                    ? "Send now"
-                    : "Send"
-              }
+              compact
+              disabled={!selectedThread || busyAction !== null}
+              emphasis="ghost"
+              label="Kill + Drop"
               onPress={() => {
-                void handleSend();
+                void handleRemoveSelectedThread();
               }}
             />
           </View>
@@ -6701,11 +6724,19 @@ function createStyles(theme: AppTheme) {
       paddingTop: 4,
       paddingBottom: 6,
     },
+    composerInputRow: {
+      alignItems: "flex-start",
+      flexDirection: "row",
+      gap: 6,
+    },
+    composerInputField: {
+      flex: 1,
+      minWidth: 0,
+    },
     composerFooter: {
       alignItems: "center",
       flexDirection: "row",
       gap: 4,
-      justifyContent: "space-between",
     },
     composerActionCluster: {
       flexDirection: "row",
@@ -6738,7 +6769,7 @@ function createStyles(theme: AppTheme) {
     composerUtilityLabelSelected: {
       color: TERMINAL_ACCENT,
     },
-    composerRunAction: {
+    composerInlineSendAction: {
       minWidth: 102,
     },
     gitCommitInput: {
