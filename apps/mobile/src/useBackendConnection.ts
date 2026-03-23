@@ -1,4 +1,5 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 
 import type {
   GitListBranchesResult,
@@ -10,6 +11,7 @@ import type {
   OrchestrationReadModel,
   ProjectEntry,
   ProviderInteractionMode,
+  ProviderUserInputAnswers,
   RuntimeMode,
   ServerConfig,
   ServerConversationCapabilities,
@@ -40,6 +42,7 @@ import {
   type SearchDirectoryInput,
   type SendTurnInput,
   type StopSessionInput,
+  type UserInputResponseInput,
 } from "./protocol";
 import { MOBILE_DEFAULT_MODEL } from "./defaults";
 import {
@@ -181,6 +184,7 @@ export function useBackendConnection() {
   const refreshQueuedRef = useRef(false);
   const shouldStayConnectedRef = useRef(false);
   const autoConnectBootstrappedRef = useRef(false);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   useEffect(() => {
     let cancelled = false;
@@ -509,6 +513,31 @@ export function useBackendConnection() {
   }, [disconnectSocket]);
 
   useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextAppState) => {
+      const previousAppState = appStateRef.current;
+      appStateRef.current = nextAppState;
+
+      const becameActive =
+        (previousAppState === "background" || previousAppState === "inactive") &&
+        nextAppState === "active";
+      if (!becameActive || !shouldStayConnectedRef.current) {
+        return;
+      }
+
+      if (isSocketOpen(socketRef.current)) {
+        void refreshSnapshot();
+        return;
+      }
+
+      void connect();
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [connect, refreshSnapshot]);
+
+  useEffect(() => {
     setPendingServerResponses((current) => {
       const pendingThreadIds = Object.keys(current);
       if (pendingThreadIds.length === 0) {
@@ -691,6 +720,20 @@ export function useBackendConnection() {
     },
   );
 
+  const updateThreadInteractionMode = useStableEvent(
+    async (input: { threadId: string; interactionMode: ProviderInteractionMode }) => {
+      await runBusyCommand("Updating mode", () =>
+        dispatchCommand(
+          withCommandMeta({
+            type: "thread.interaction-mode.set",
+            threadId: input.threadId,
+            interactionMode: input.interactionMode,
+          }),
+        ),
+      );
+    },
+  );
+
   const updateThreadBranch = useStableEvent(async (input: { threadId: string; branch: string }) => {
     await runBusyCommand("Updating branch", () =>
       dispatchCommand(
@@ -762,6 +805,19 @@ export function useBackendConnection() {
           threadId: input.threadId,
           requestId: input.requestId,
           decision: input.decision,
+        }),
+      ),
+    );
+  });
+
+  const respondToUserInput = useStableEvent(async (input: UserInputResponseInput) => {
+    await runBusyCommand("Sending answer", () =>
+      dispatchCommand(
+        withCommandMeta({
+          type: "thread.user-input.respond",
+          threadId: input.threadId,
+          requestId: input.requestId,
+          answers: input.answers as ProviderUserInputAnswers,
         }),
       ),
     );
@@ -911,11 +967,16 @@ export function useBackendConnection() {
     updateThreadBranch: (input: { threadId: string; branch: string }) => updateThreadBranch(input),
     updateThreadRuntimeMode: (input: { threadId: string; runtimeMode: RuntimeMode }) =>
       updateThreadRuntimeMode(input),
+    updateThreadInteractionMode: (input: {
+      threadId: string;
+      interactionMode: ProviderInteractionMode;
+    }) => updateThreadInteractionMode(input),
     getConversationCapabilities: (input: GetConversationCapabilitiesInput) =>
       getConversationCapabilities(input),
     interruptTurn: (input: InterruptTurnInput) => interruptTurn(input),
     stopSession: (input: StopSessionInput) => stopSession(input),
     respondToApproval: (input: ApprovalResponseInput) => respondToApproval(input),
+    respondToUserInput: (input: UserInputResponseInput) => respondToUserInput(input),
     deleteThread: (input: DeleteThreadInput) => deleteThread(input),
     searchDirectory: (input: SearchDirectoryInput) => searchDirectory(input),
     createDirectory: (input: CreateDirectoryInput) => createDirectory(input),

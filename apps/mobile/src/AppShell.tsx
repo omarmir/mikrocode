@@ -66,10 +66,13 @@ import type {
   OrchestrationThread,
   OrchestrationThreadActivity,
   ProviderApprovalDecision,
+  ProviderInteractionMode,
+  ProviderUserInputAnswers,
   ProjectEntry,
   ProviderReasoningEffort,
   RuntimeMode,
   ServerConversationCapabilities,
+  UserInputQuestion,
   UploadChatAttachment,
 } from "@t3tools/contracts";
 
@@ -547,6 +550,10 @@ function formatRuntimeModeIcon(mode: RuntimeMode): FeatherIconName {
   return mode === "full-access" ? "unlock" : "lock";
 }
 
+function formatInteractionModeIcon(mode: ProviderInteractionMode): FeatherIconName {
+  return mode === "plan" ? "file-text" : "message-square";
+}
+
 function formatAssistantDeliveryModeIcon(mode: AssistantDeliveryMode): FeatherIconName {
   return mode === "streaming" ? "chevrons-right" : "clock";
 }
@@ -751,6 +758,70 @@ type PendingApprovalRequest = {
   readonly requestKind: string | null;
 };
 
+type PendingUserInputRequest = {
+  readonly requestId: string;
+  readonly questions: ReadonlyArray<UserInputQuestion>;
+};
+
+type PendingUserInputSelectionState = Record<string, Record<string, string | string[]>>;
+type PendingUserInputOtherState = Record<string, Record<string, string>>;
+
+function readPayloadBoolean(payload: unknown, key: string) {
+  const record = asRecord(payload);
+  const value = record?.[key];
+  return typeof value === "boolean" ? value : null;
+}
+
+function readPayloadQuestions(payload: unknown): ReadonlyArray<UserInputQuestion> {
+  const record = asRecord(payload);
+  const rawQuestions = Array.isArray(record?.questions) ? record.questions : [];
+
+  return rawQuestions.flatMap((entry) => {
+    const question = asRecord(entry);
+    if (!question) {
+      return [];
+    }
+
+    const id = typeof question.id === "string" && question.id.trim() ? question.id.trim() : null;
+    const header =
+      typeof question.header === "string" && question.header.trim() ? question.header.trim() : null;
+    const prompt =
+      typeof question.question === "string" && question.question.trim()
+        ? question.question.trim()
+        : null;
+    const options = (Array.isArray(question.options) ? question.options : []).flatMap((option) => {
+      const optionRecord = asRecord(option);
+      if (!optionRecord) {
+        return [];
+      }
+
+      const label =
+        typeof optionRecord.label === "string" && optionRecord.label.trim()
+          ? optionRecord.label.trim()
+          : null;
+      const description =
+        typeof optionRecord.description === "string" && optionRecord.description.trim()
+          ? optionRecord.description.trim()
+          : null;
+      return label && description ? [{ label, description }] : [];
+    });
+
+    if (!id || !header || !prompt || options.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        id,
+        header,
+        question: prompt,
+        options,
+        ...(readPayloadBoolean(question, "multiSelect") ? { multiSelect: true } : {}),
+      } satisfies UserInputQuestion,
+    ];
+  });
+}
+
 function findPendingApprovalRequest(
   thread: OrchestrationThread | null,
 ): PendingApprovalRequest | null {
@@ -784,6 +855,68 @@ function findPendingApprovalRequest(
   }
 
   return null;
+}
+
+function findPendingUserInputRequest(
+  thread: OrchestrationThread | null,
+): PendingUserInputRequest | null {
+  if (!thread) {
+    return null;
+  }
+
+  const resolvedRequestIds = new Set<string>();
+
+  for (const activity of sortActivities(thread.activities).toReversed()) {
+    const requestId = readPayloadString(activity.payload, "requestId");
+    if (!requestId) {
+      continue;
+    }
+
+    if (activity.kind === "user-input.resolved") {
+      resolvedRequestIds.add(requestId);
+      continue;
+    }
+
+    if (activity.kind !== "user-input.requested" || resolvedRequestIds.has(requestId)) {
+      continue;
+    }
+
+    const questions = readPayloadQuestions(activity.payload);
+    if (questions.length === 0) {
+      continue;
+    }
+
+    return {
+      requestId,
+      questions,
+    };
+  }
+
+  return null;
+}
+
+function findLatestActiveTaskType(thread: OrchestrationThread | null): string | null {
+  const activeTurnId = thread?.latestTurn?.turnId ?? null;
+  if (!thread || !activeTurnId) {
+    return null;
+  }
+
+  for (const activity of sortActivities(thread.activities).toReversed()) {
+    if (activity.turnId !== activeTurnId || activity.kind !== "task.started") {
+      continue;
+    }
+
+    return readPayloadString(activity.payload, "taskType");
+  }
+
+  return null;
+}
+
+function getUserInputAnswerKey(
+  provider: "codex" | "claudeAgent" | null,
+  question: UserInputQuestion,
+) {
+  return provider === "claudeAgent" ? question.question : question.id;
 }
 
 function ActionButton({
@@ -1143,11 +1276,11 @@ function AppShellContent() {
     gitStatus,
     getConversationCapabilities,
     interruptTurn,
-    isRefreshingSnapshot,
     lastPushSequence,
     pendingServerResponseThreadIds,
     refreshSnapshot,
     respondToApproval,
+    respondToUserInput,
     resolvedWebSocketUrl,
     searchDirectory,
     sendTurn,
@@ -1158,6 +1291,7 @@ function AppShellContent() {
     status,
     stopSession,
     updateThreadBranch,
+    updateThreadInteractionMode,
     updateThreadModel,
     updateThreadRuntimeMode,
     welcome,
@@ -1170,7 +1304,6 @@ function AppShellContent() {
   const themeContextValue = useMemo(() => ({ styles, theme }), [styles, theme]);
   const TERMINAL_BORDER = theme.border;
   const TERMINAL_MUTED = theme.muted;
-  const TERMINAL_ACCENT = theme.accent;
   const TERMINAL_ACCENT_SOFT = theme.accentSoft;
   const insets = useSafeAreaInsets();
 
@@ -1198,6 +1331,11 @@ function AppShellContent() {
     Record<string, ThreadTurnPreference>
   >({});
   const [threadTurnPreferencesReady, setThreadTurnPreferencesReady] = useState(false);
+  const [pendingUserInputSelections, setPendingUserInputSelections] =
+    useState<PendingUserInputSelectionState>({});
+  const [pendingUserInputOtherDrafts, setPendingUserInputOtherDrafts] =
+    useState<PendingUserInputOtherState>({});
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [revealedMessageId, setRevealedMessageId] = useState<string | null>(null);
   const [projectBuilderOpen, setProjectBuilderOpen] = useState(false);
   const [projectBuilderRoot, setProjectBuilderRoot] = useState<string | null>(null);
@@ -1283,21 +1421,36 @@ function AppShellContent() {
           reasoningEffort: resolvedReasoning,
           assistantDeliveryMode: stored?.assistantDeliveryMode ?? "streaming",
           runtimeMode: stored?.runtimeMode ?? selectedThread.runtimeMode ?? "full-access",
+          interactionMode: stored?.interactionMode ?? selectedThread.interactionMode ?? "default",
         } satisfies ThreadTurnPreference;
       })()
     : null;
   const selectedRuntimeMode =
     selectedThreadTurnPreference?.runtimeMode ?? selectedThread?.runtimeMode ?? "full-access";
+  const selectedInteractionMode =
+    selectedThreadTurnPreference?.interactionMode ?? selectedThread?.interactionMode ?? "default";
   const selectedAssistantDeliveryMode =
     selectedThreadTurnPreference?.assistantDeliveryMode ?? "streaming";
   const selectedThreadHasPendingServerResponse =
     selectedThread !== null && pendingServerResponseThreadIds.includes(selectedThread.id);
+  const pendingUserInputRequest = findPendingUserInputRequest(selectedThread);
+  const activeTaskType = findLatestActiveTaskType(selectedThread);
   const sessionStatus = selectedThread?.session?.status ?? "idle";
   const sessionBusy = isThreadWaitingForResponse(
     selectedThread,
     selectedThreadHasPendingServerResponse,
   );
   const showWaitingIndicator = selectedThread !== null && sessionBusy;
+  const waitingIndicatorLabel =
+    pendingUserInputRequest !== null
+      ? "awaiting input"
+      : activeTaskType === "plan"
+        ? "planning"
+        : activeTaskType === "default"
+          ? "executing"
+          : selectedInteractionMode === "plan"
+            ? "planning"
+            : "executing";
 
   const snapshotSequenceLabel = lastPushSequence === null ? "--" : `${lastPushSequence}`;
   const homeSubtitle = selectedProject
@@ -1696,6 +1849,11 @@ function AppShellContent() {
           current[selectedThread.id]?.runtimeMode ??
           selectedThread.runtimeMode ??
           "full-access",
+        interactionMode:
+          patch.interactionMode ??
+          current[selectedThread.id]?.interactionMode ??
+          selectedThread.interactionMode ??
+          "default",
       },
     }));
   };
@@ -1861,6 +2019,19 @@ function AppShellContent() {
     setSelectedThreadId(null);
     if (!sidebarPersistent) {
       closeNavMenu();
+    }
+  };
+
+  const handlePullToRefresh = async () => {
+    if (isPullRefreshing) {
+      return;
+    }
+
+    setIsPullRefreshing(true);
+    try {
+      await refreshSnapshot();
+    } finally {
+      setIsPullRefreshing(false);
     }
   };
 
@@ -2043,6 +2214,156 @@ function AppShellContent() {
     );
   };
 
+  const handleSelectConversationInteractionMode = async (
+    interactionMode: ProviderInteractionMode,
+  ) => {
+    if (!selectedThread) {
+      return;
+    }
+    if (selectedInteractionMode === interactionMode) {
+      return;
+    }
+
+    await updateThreadInteractionMode({
+      threadId: selectedThread.id,
+      interactionMode,
+    });
+    updateThreadTurnPreference({ interactionMode });
+    showToast(interactionMode === "plan" ? "Mode: Plan" : "Mode: Default");
+  };
+
+  const handleToggleConversationInteractionMode = async () => {
+    await handleSelectConversationInteractionMode(
+      selectedInteractionMode === "plan" ? "default" : "plan",
+    );
+  };
+
+  const updatePendingUserInputSelection = (
+    requestId: string,
+    answerKey: string,
+    value: string | string[],
+  ) => {
+    setPendingUserInputSelections((current) => ({
+      ...current,
+      [requestId]: {
+        ...current[requestId],
+        [answerKey]: value,
+      },
+    }));
+  };
+
+  const updatePendingUserInputOtherDraft = (
+    requestId: string,
+    answerKey: string,
+    value: string,
+  ) => {
+    setPendingUserInputOtherDrafts((current) => ({
+      ...current,
+      [requestId]: {
+        ...current[requestId],
+        [answerKey]: value,
+      },
+    }));
+  };
+
+  const handleTogglePendingUserInputOption = (question: UserInputQuestion, optionLabel: string) => {
+    if (!pendingUserInputRequest) {
+      return;
+    }
+
+    const answerKey = getUserInputAnswerKey(selectedConversationProvider, question);
+    const currentValue = pendingUserInputSelections[pendingUserInputRequest.requestId]?.[answerKey];
+
+    if (question.multiSelect) {
+      const currentAnswers = Array.isArray(currentValue)
+        ? currentValue
+        : typeof currentValue === "string" && currentValue.trim()
+          ? [currentValue]
+          : [];
+      const nextAnswers = currentAnswers.includes(optionLabel)
+        ? currentAnswers.filter((value) => value !== optionLabel)
+        : [...currentAnswers, optionLabel];
+      updatePendingUserInputSelection(pendingUserInputRequest.requestId, answerKey, nextAnswers);
+      return;
+    }
+
+    updatePendingUserInputSelection(pendingUserInputRequest.requestId, answerKey, optionLabel);
+  };
+
+  const handleChangePendingUserInputOtherDraft = (question: UserInputQuestion, value: string) => {
+    if (!pendingUserInputRequest) {
+      return;
+    }
+
+    const answerKey = getUserInputAnswerKey(selectedConversationProvider, question);
+    updatePendingUserInputOtherDraft(pendingUserInputRequest.requestId, answerKey, value);
+  };
+
+  const handleRespondToPendingUserInput = async () => {
+    if (!selectedThread || !pendingUserInputRequest) {
+      return;
+    }
+
+    const selectionDrafts = pendingUserInputSelections[pendingUserInputRequest.requestId] ?? {};
+    const otherDrafts = pendingUserInputOtherDrafts[pendingUserInputRequest.requestId] ?? {};
+    const answers: Record<string, string | string[]> = {};
+
+    for (const question of pendingUserInputRequest.questions) {
+      const answerKey = getUserInputAnswerKey(selectedConversationProvider, question);
+      const selectedValue = selectionDrafts[answerKey];
+      const otherValue = otherDrafts[answerKey]?.trim() ?? "";
+
+      if (question.multiSelect) {
+        const selections = Array.isArray(selectedValue)
+          ? selectedValue.filter((value) => value.trim().length > 0)
+          : typeof selectedValue === "string" && selectedValue.trim()
+            ? [selectedValue.trim()]
+            : [];
+        const combinedAnswers = otherValue ? [...selections, otherValue] : selections;
+        if (combinedAnswers.length === 0) {
+          showToast("Answer every question before submitting");
+          return;
+        }
+        answers[answerKey] = combinedAnswers;
+        continue;
+      }
+
+      const singleAnswer =
+        typeof selectedValue === "string" && selectedValue.trim().length > 0
+          ? selectedValue.trim()
+          : otherValue;
+      if (!singleAnswer) {
+        showToast("Answer every question before submitting");
+        return;
+      }
+      answers[answerKey] = singleAnswer;
+    }
+
+    await respondToUserInput({
+      threadId: selectedThread.id,
+      requestId: pendingUserInputRequest.requestId,
+      answers: answers as ProviderUserInputAnswers,
+    });
+
+    setPendingUserInputSelections((current) => {
+      if (!(pendingUserInputRequest.requestId in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[pendingUserInputRequest.requestId];
+      return next;
+    });
+    setPendingUserInputOtherDrafts((current) => {
+      if (!(pendingUserInputRequest.requestId in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[pendingUserInputRequest.requestId];
+      return next;
+    });
+    showToast("Answer sent");
+  };
+
   const handleRefreshGitState = async () => {
     if (!selectedWorkspaceRoot) {
       return;
@@ -2199,7 +2520,7 @@ function AppShellContent() {
         dataUrl: attachment.dataUrl,
       })),
       runtimeMode: selectedRuntimeMode,
-      interactionMode: selectedThread.interactionMode,
+      interactionMode: selectedInteractionMode,
       model: selectedThread.model,
       assistantDeliveryMode: selectedAssistantDeliveryMode,
       modelOptions:
@@ -2252,6 +2573,13 @@ function AppShellContent() {
     isConnected &&
     selectedThread !== null &&
     pendingApprovalRequest !== null &&
+    selectedThread.session !== null &&
+    selectedThread.session.status !== "stopped" &&
+    busyAction === null;
+  const canRespondToPendingUserInput =
+    isConnected &&
+    selectedThread !== null &&
+    pendingUserInputRequest !== null &&
     selectedThread.session !== null &&
     selectedThread.session.status !== "stopped" &&
     busyAction === null;
@@ -2421,9 +2749,11 @@ function AppShellContent() {
       keyboardShouldPersistTaps="handled"
       refreshControl={
         <RefreshControl
-          onRefresh={refreshSnapshot}
-          refreshing={isRefreshingSnapshot}
-          tintColor={TERMINAL_ACCENT}
+          onRefresh={() => {
+            void handlePullToRefresh();
+          }}
+          refreshing={isPullRefreshing}
+          tintColor={theme.accent}
         />
       }
     >
@@ -2623,6 +2953,29 @@ function AppShellContent() {
             />
           </Pressable>
           <Pressable
+            accessibilityLabel={
+              selectedInteractionMode === "plan" ? "Disable plan mode" : "Enable plan mode"
+            }
+            disabled={!selectedThread || !isConnected || busyAction !== null}
+            onPress={() => {
+              void handleToggleConversationInteractionMode();
+            }}
+            style={[
+              styles.composerControlButton,
+              styles.composerControlButtonIcon,
+              selectedInteractionMode === "plan" && styles.composerControlButtonSelected,
+              (!selectedThread || !isConnected || busyAction !== null) && styles.buttonDisabled,
+            ]}
+          >
+            <Feather
+              accessibilityElementsHidden
+              color={selectedInteractionMode === "plan" ? theme.accent : theme.text}
+              importantForAccessibility="no-hide-descendants"
+              name={formatInteractionModeIcon(selectedInteractionMode)}
+              size={14}
+            />
+          </Pressable>
+          <Pressable
             disabled={
               !selectedThread || busyAction !== null || selectedReasoningOptions.length === 0
             }
@@ -2699,9 +3052,11 @@ function AppShellContent() {
         }}
         refreshControl={
           <RefreshControl
-            onRefresh={refreshSnapshot}
-            refreshing={isRefreshingSnapshot}
-            tintColor={TERMINAL_ACCENT}
+            onRefresh={() => {
+              void handlePullToRefresh();
+            }}
+            refreshing={isPullRefreshing}
+            tintColor={theme.accent}
           />
         }
         style={styles.messagesScroll}
@@ -2831,7 +3186,7 @@ function AppShellContent() {
               },
             ]}
           >
-            <Text style={styles.waitingIndicatorText}>waiting</Text>
+            <Text style={styles.waitingIndicatorText}>{waitingIndicatorLabel}</Text>
           </Animated.View>
         ) : null}
       </ScrollView>
@@ -2879,6 +3234,88 @@ function AppShellContent() {
                 label="Deny"
                 onPress={() => {
                   void handleRespondToPendingApproval("decline");
+                }}
+              />
+            </View>
+          </View>
+        ) : null}
+
+        {pendingUserInputRequest ? (
+          <View style={styles.pendingUserInputPanel}>
+            <Text style={styles.pendingUserInputEyebrow}>Model Question</Text>
+            {pendingUserInputRequest.questions.map((question) => {
+              const answerKey = getUserInputAnswerKey(selectedConversationProvider, question);
+              const selectedValue =
+                pendingUserInputSelections[pendingUserInputRequest.requestId]?.[answerKey];
+              const otherDraft =
+                pendingUserInputOtherDrafts[pendingUserInputRequest.requestId]?.[answerKey] ?? "";
+              const selectedValues = Array.isArray(selectedValue)
+                ? selectedValue
+                : typeof selectedValue === "string" && selectedValue.trim().length > 0
+                  ? [selectedValue]
+                  : [];
+
+              return (
+                <View key={question.id} style={styles.pendingUserInputQuestionCard}>
+                  <Text style={styles.pendingUserInputQuestionHeader}>{question.header}</Text>
+                  <Text style={styles.pendingUserInputQuestionText}>{question.question}</Text>
+                  <Text style={styles.pendingUserInputQuestionHint}>
+                    {question.multiSelect ? "Select one or more answers." : "Select one answer."}
+                  </Text>
+                  <View style={styles.pendingUserInputOptionList}>
+                    {question.options.map((option) => {
+                      const selected = selectedValues.includes(option.label);
+                      return (
+                        <Pressable
+                          key={`${question.id}:${option.label}`}
+                          disabled={!canRespondToPendingUserInput}
+                          onPress={() => {
+                            handleTogglePendingUserInputOption(question, option.label);
+                          }}
+                          style={[
+                            styles.pendingUserInputOptionButton,
+                            selected && styles.pendingUserInputOptionButtonSelected,
+                            !canRespondToPendingUserInput && styles.buttonDisabled,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.pendingUserInputOptionLabel,
+                              selected && styles.pendingUserInputOptionLabelSelected,
+                            ]}
+                          >
+                            {option.label}
+                          </Text>
+                          <Text style={styles.pendingUserInputOptionDescription}>
+                            {option.description}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <TextInput
+                    editable={canRespondToPendingUserInput}
+                    onChangeText={(value) => {
+                      handleChangePendingUserInputOtherDraft(question, value);
+                    }}
+                    placeholder="Other"
+                    placeholderTextColor={theme.muted}
+                    style={[
+                      styles.pendingUserInputOtherInput,
+                      !canRespondToPendingUserInput && styles.buttonDisabled,
+                    ]}
+                    value={otherDraft}
+                  />
+                </View>
+              );
+            })}
+            <View style={styles.inlineButtonRow}>
+              <ActionButton
+                compact
+                disabled={!canRespondToPendingUserInput}
+                label="Submit"
+                onPress={() => {
+                  void handleRespondToPendingUserInput();
                 }}
               />
             </View>
@@ -5015,6 +5452,83 @@ function createStyles(theme: AppTheme) {
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 10,
       lineHeight: 15,
+    },
+    pendingUserInputPanel: {
+      backgroundColor: TERMINAL_PANEL_ALT,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      gap: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 8,
+    },
+    pendingUserInputEyebrow: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 1,
+      textTransform: "uppercase",
+    },
+    pendingUserInputQuestionCard: {
+      gap: 5,
+    },
+    pendingUserInputQuestionHeader: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      fontWeight: "700",
+    },
+    pendingUserInputQuestionText: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 16,
+    },
+    pendingUserInputQuestionHint: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+    },
+    pendingUserInputOptionList: {
+      gap: 5,
+    },
+    pendingUserInputOptionButton: {
+      backgroundColor: TERMINAL_PANEL,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      gap: 3,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+    },
+    pendingUserInputOptionButtonSelected: {
+      borderColor: TERMINAL_ACCENT,
+      backgroundColor: TERMINAL_ACCENT_SOFT,
+    },
+    pendingUserInputOptionLabel: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+    },
+    pendingUserInputOptionLabelSelected: {
+      color: TERMINAL_ACCENT,
+    },
+    pendingUserInputOptionDescription: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      lineHeight: 14,
+    },
+    pendingUserInputOtherInput: {
+      backgroundColor: TERMINAL_BG,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 12,
+      minHeight: 34,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
     },
     waitingIndicator: {
       alignSelf: "flex-start",

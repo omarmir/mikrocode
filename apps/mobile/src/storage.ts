@@ -2,6 +2,7 @@ import Constants from "expo-constants";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type {
   AssistantDeliveryMode,
+  ProviderInteractionMode,
   ProviderReasoningEffort,
   RuntimeMode,
 } from "@t3tools/contracts";
@@ -26,6 +27,7 @@ export interface StoredThreadTurnPreference {
   readonly reasoningEffort: ProviderReasoningEffort | null;
   readonly assistantDeliveryMode: AssistantDeliveryMode;
   readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
 }
 
 const STORAGE_KEY = "@t3tools/mobile/connection-settings";
@@ -33,6 +35,7 @@ const THREAD_TURN_PREFERENCES_STORAGE_KEY = "@t3tools/mobile/thread-turn-prefere
 const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultrathink"]);
 const VALID_ASSISTANT_DELIVERY_MODES = new Set(["buffered", "streaming"]);
 const VALID_RUNTIME_MODES = new Set(["approval-required", "full-access"]);
+const VALID_INTERACTION_MODES = new Set(["default", "plan"]);
 
 export const DEFAULT_CONNECTION_SETTINGS: ConnectionSettings = {
   serverUrl: "ws://localhost:3773",
@@ -94,6 +97,10 @@ function parseStoredThreadTurnPreference(value: unknown): StoredThreadTurnPrefer
     typeof value.runtimeMode === "string" && VALID_RUNTIME_MODES.has(value.runtimeMode)
       ? (value.runtimeMode as RuntimeMode)
       : null;
+  const interactionMode =
+    typeof value.interactionMode === "string" && VALID_INTERACTION_MODES.has(value.interactionMode)
+      ? (value.interactionMode as ProviderInteractionMode)
+      : "default";
 
   if (!assistantDeliveryMode || !runtimeMode) {
     return null;
@@ -103,6 +110,7 @@ function parseStoredThreadTurnPreference(value: unknown): StoredThreadTurnPrefer
     reasoningEffort,
     assistantDeliveryMode,
     runtimeMode,
+    interactionMode,
   };
 }
 

@@ -10,6 +10,7 @@ import type {
   ProviderModelOptions,
   ProviderReasoningEffort,
   ProviderInteractionMode,
+  ProviderUserInputAnswers,
   RuntimeMode,
   ServerConfig,
   ServerConversationCapabilities,
@@ -94,6 +95,12 @@ export interface ApprovalResponseInput {
   readonly threadId: string;
   readonly requestId: string;
   readonly decision: "accept" | "acceptForSession" | "decline" | "cancel";
+}
+
+export interface UserInputResponseInput {
+  readonly threadId: string;
+  readonly requestId: string;
+  readonly answers: ProviderUserInputAnswers;
 }
 
 export interface DeleteThreadInput {
