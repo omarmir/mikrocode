@@ -215,7 +215,8 @@ export interface GitCoreShape {
   ) => Effect.Effect<void, GitCommandError, Scope.Scope>;
 
   /**
-   * Checkout main/master and prepare a merge from the current branch without committing.
+   * Checkout the repository default branch, update it from remote when available, and prepare a
+   * merge from the current branch without committing.
    */
   readonly prepareMainlineMerge: (
     input: GitPrepareMainlineMergeInput,

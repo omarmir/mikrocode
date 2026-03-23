@@ -2669,12 +2669,8 @@ function AppShellContent() {
     !sessionBusy;
   const gitCurrentBranch = gitRepoStatus?.branch ?? selectedThread?.branch ?? null;
   const gitWorkingTreeDirty = gitRepoStatus?.hasWorkingTreeChanges ?? false;
-  const gitCurrentBranchIsMainline = gitCurrentBranch === "main" || gitCurrentBranch === "master";
   const canPrepareGitMainlineMerge =
-    canRunGitOperations &&
-    gitCurrentBranch !== null &&
-    !gitCurrentBranchIsMainline &&
-    !gitWorkingTreeDirty;
+    canRunGitOperations && gitCurrentBranch !== null && !gitWorkingTreeDirty;
   const gitManualCommitMessage = gitCommitMessageDraft.trim();
 
   const renderSidebar = () => (
@@ -3804,10 +3800,11 @@ function AppShellContent() {
 
             <View style={styles.gitFlowSection}>
               <Text style={styles.navSectionLabel}>Flow 3</Text>
-              <Text style={styles.gitFlowHeading}>Merge into main/master</Text>
+              <Text style={styles.gitFlowHeading}>Merge into default branch</Text>
               <Text style={styles.gitFlowDescription}>
-                Switch to `main` or `master`, prepare a merge from the current branch without
-                committing, then use Flow 1 or Flow 2 to commit and push from the mainline branch.
+                Switch to the repo default branch, fetch and pull it to make sure it is current,
+                then prepare a merge from the current branch without committing. Use Flow 1 or Flow
+                2 afterward to commit and push from that default branch.
               </Text>
               <Text style={styles.selectionRowReason}>
                 This changes the checked-out branch and, if conflicts happen, accepts the incoming
@@ -3823,13 +3820,9 @@ function AppShellContent() {
                 />
               </View>
               <Text style={styles.gitFlowStatus}>
-                Source: {formatGitBranchLabel(gitCurrentBranch)} / Target: main or master
+                Source: {formatGitBranchLabel(gitCurrentBranch)} / Target: repo default branch
               </Text>
-              {gitCurrentBranchIsMainline ? (
-                <Text style={styles.helperText}>
-                  Already on {formatGitBranchLabel(gitCurrentBranch)}.
-                </Text>
-              ) : gitWorkingTreeDirty ? (
+              {gitWorkingTreeDirty ? (
                 <Text style={styles.helperText}>
                   Commit or stash the current working tree changes before starting the merge.
                 </Text>
@@ -3839,8 +3832,8 @@ function AppShellContent() {
                 emphasis="surface"
                 label={
                   gitMergeUseSquash
-                    ? "checkout main/master + squash merge"
-                    : "checkout main/master + merge"
+                    ? "switch default + pull + squash merge"
+                    : "switch default + pull + merge"
                 }
                 onPress={() => {
                   void handlePrepareMainlineMerge();

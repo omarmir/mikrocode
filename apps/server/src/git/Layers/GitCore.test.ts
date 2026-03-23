@@ -1777,7 +1777,7 @@ it.layer(TestLayer)("git integration", (it) => {
       }),
     );
 
-    it.effect("prepares a no-commit merge into the mainline branch", () =>
+    it.effect("prepares a no-commit merge into the default branch", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(tmp);
@@ -1799,6 +1799,53 @@ it.layer(TestLayer)("git integration", (it) => {
           /^[0-9a-f]{40}$/i,
         );
         expect(yield* git(tmp, ["status", "--short"])).toContain("A  feature.txt");
+      }),
+    );
+
+    it.effect("updates the remote default branch before preparing a merge", () =>
+      Effect.gen(function* () {
+        const remote = yield* makeTmpDir();
+        const source = yield* makeTmpDir();
+        const clone = yield* makeTmpDir();
+        const core = yield* GitCore;
+
+        yield* git(remote, ["init", "--bare", "--initial-branch=trunk"]);
+
+        yield* git(source, ["init", "--initial-branch=trunk"]);
+        yield* git(source, ["config", "user.email", "test@test.com"]);
+        yield* git(source, ["config", "user.name", "Test"]);
+        yield* writeTextFile(path.join(source, "README.md"), "# test\n");
+        yield* git(source, ["add", "."]);
+        yield* git(source, ["commit", "-m", "initial commit"]);
+        yield* git(source, ["remote", "add", "origin", remote]);
+        yield* git(source, ["push", "-u", "origin", "trunk"]);
+        yield* git(source, ["branch", "main", "trunk"]);
+
+        yield* git(source, ["checkout", "-b", "feature/default-branch-merge"]);
+        yield* writeTextFile(path.join(source, "feature.txt"), "merge me\n");
+        yield* git(source, ["add", "feature.txt"]);
+        yield* git(source, ["commit", "-m", "feature commit"]);
+
+        yield* git(clone, ["clone", remote, "."]);
+        yield* git(clone, ["config", "user.email", "test@test.com"]);
+        yield* git(clone, ["config", "user.name", "Test"]);
+        yield* writeTextFile(path.join(clone, "CHANGELOG.md"), "remote change\n");
+        yield* git(clone, ["add", "CHANGELOG.md"]);
+        yield* git(clone, ["commit", "-m", "remote update"]);
+        yield* git(clone, ["push", "origin", "trunk"]);
+
+        const result = yield* core.prepareMainlineMerge({ cwd: source, squash: false });
+
+        expect(result.sourceBranch).toBe("feature/default-branch-merge");
+        expect(result.targetBranch).toBe("trunk");
+        expect(result.squash).toBe(false);
+        expect(result.conflictsResolvedWithIncoming).toBe(false);
+        expect(yield* git(source, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("trunk");
+        expect(yield* git(source, ["show", "HEAD:CHANGELOG.md"])).toBe("remote change");
+        expect(yield* git(source, ["rev-parse", "-q", "--verify", "MERGE_HEAD"])).toMatch(
+          /^[0-9a-f]{40}$/i,
+        );
+        expect(yield* git(source, ["status", "--short"])).toContain("A  feature.txt");
       }),
     );
 

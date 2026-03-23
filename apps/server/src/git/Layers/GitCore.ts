@@ -193,13 +193,31 @@ function commandLabel(args: readonly string[]): string {
 }
 
 function parseDefaultBranchFromRemoteHeadRef(value: string, remoteName: string): string | null {
-  const trimmed = value.trim();
-  const prefix = `refs/remotes/${remoteName}/`;
-  if (!trimmed.startsWith(prefix)) {
-    return null;
+  for (const line of value.split(/\r?\n/g)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+
+    const remoteHeadMatch = trimmed.match(/^ref:\s+refs\/heads\/(.+)\s+HEAD$/);
+    if (remoteHeadMatch) {
+      const branch = remoteHeadMatch[1]?.trim() ?? "";
+      if (branch.length > 0) {
+        return branch;
+      }
+    }
+
+    const prefix = `refs/remotes/${remoteName}/`;
+    if (!trimmed.startsWith(prefix)) {
+      continue;
+    }
+    const branch = trimmed.slice(prefix.length).trim();
+    if (branch.length > 0) {
+      return branch;
+    }
   }
-  const branch = trimmed.slice(prefix.length).trim();
-  return branch.length > 0 ? branch : null;
+
+  return null;
 }
 
 function mergeFailureLooksLikeConflict(stdout: string, stderr: string): boolean {
@@ -428,19 +446,35 @@ const makeGitCore = Effect.gen(function* () {
     cwd: string,
     remoteName: string,
   ): Effect.Effect<string | null, GitCommandError> =>
-    executeGit(
-      "GitCore.resolveDefaultBranchName",
-      cwd,
-      ["symbolic-ref", `refs/remotes/${remoteName}/HEAD`],
-      { allowNonZeroExit: true },
-    ).pipe(
-      Effect.map((result) => {
-        if (result.code !== 0) {
-          return null;
-        }
-        return parseDefaultBranchFromRemoteHeadRef(result.stdout, remoteName);
-      }),
-    );
+    Effect.gen(function* () {
+      const remoteHeadResult = yield* executeGit(
+        "GitCore.resolveDefaultBranchName.remoteHead",
+        cwd,
+        ["ls-remote", "--symref", remoteName, "HEAD"],
+        {
+          allowNonZeroExit: true,
+          timeoutMs: 15_000,
+        },
+      );
+      const remoteDefaultBranch = parseDefaultBranchFromRemoteHeadRef(
+        remoteHeadResult.stdout,
+        remoteName,
+      );
+      if (remoteDefaultBranch) {
+        return remoteDefaultBranch;
+      }
+
+      const localHeadResult = yield* executeGit(
+        "GitCore.resolveDefaultBranchName.localHead",
+        cwd,
+        ["symbolic-ref", `refs/remotes/${remoteName}/HEAD`],
+        { allowNonZeroExit: true },
+      );
+      if (localHeadResult.code !== 0) {
+        return null;
+      }
+      return parseDefaultBranchFromRemoteHeadRef(localHeadResult.stdout, remoteName);
+    });
 
   const remoteBranchExists = (
     cwd: string,
@@ -600,30 +634,36 @@ const makeGitCore = Effect.gen(function* () {
 
   const resolveMainlineBranchName = (cwd: string): Effect.Effect<string, GitCommandError> =>
     Effect.gen(function* () {
-      for (const candidate of DEFAULT_BASE_BRANCH_CANDIDATES) {
+      const primaryRemoteName = yield* resolvePrimaryRemoteName(cwd).pipe(
+        Effect.catch(() => Effect.succeed(null)),
+      );
+      const remoteDefaultBranch =
+        primaryRemoteName === null
+          ? null
+          : yield* resolveDefaultBranchName(cwd, primaryRemoteName).pipe(
+              Effect.catch(() => Effect.succeed(null)),
+            );
+      if (remoteDefaultBranch) {
+        if (yield* branchExists(cwd, remoteDefaultBranch)) {
+          return remoteDefaultBranch;
+        }
+        if (
+          primaryRemoteName &&
+          (yield* remoteBranchExists(cwd, primaryRemoteName, remoteDefaultBranch))
+        ) {
+          return remoteDefaultBranch;
+        }
+      }
+
+      const fallbackCandidates = Array.from(new Set(DEFAULT_BASE_BRANCH_CANDIDATES));
+      for (const candidate of fallbackCandidates) {
         if (yield* branchExists(cwd, candidate)) {
           return candidate;
         }
       }
 
-      const primaryRemoteName = yield* resolvePrimaryRemoteName(cwd).pipe(
-        Effect.catch(() => Effect.succeed(null)),
-      );
       if (primaryRemoteName) {
-        const remoteDefaultBranch = yield* resolveDefaultBranchName(cwd, primaryRemoteName).pipe(
-          Effect.catch(() => Effect.succeed(null)),
-        );
-        if (
-          remoteDefaultBranch &&
-          DEFAULT_BASE_BRANCH_CANDIDATES.includes(
-            remoteDefaultBranch as (typeof DEFAULT_BASE_BRANCH_CANDIDATES)[number],
-          ) &&
-          (yield* remoteBranchExists(cwd, primaryRemoteName, remoteDefaultBranch))
-        ) {
-          return remoteDefaultBranch;
-        }
-
-        for (const candidate of DEFAULT_BASE_BRANCH_CANDIDATES) {
+        for (const candidate of fallbackCandidates) {
           if (yield* remoteBranchExists(cwd, primaryRemoteName, candidate)) {
             return candidate;
           }
@@ -633,8 +673,59 @@ const makeGitCore = Effect.gen(function* () {
       return yield* createGitCommandError(
         "GitCore.prepareMainlineMerge.resolveTarget",
         cwd,
-        ["branch", "--list", ...DEFAULT_BASE_BRANCH_CANDIDATES],
-        "Could not find a local or remote main/master branch.",
+        [
+          "branch",
+          "--list",
+          ...(remoteDefaultBranch ? [remoteDefaultBranch] : []),
+          ...fallbackCandidates,
+        ],
+        "Could not find the repository default branch locally or on the primary remote.",
+      );
+    });
+
+  const updateCheckedOutBranchBeforeMerge = (
+    cwd: string,
+    targetBranch: string,
+  ): Effect.Effect<void, GitCommandError> =>
+    Effect.gen(function* () {
+      const currentUpstream = yield* resolveCurrentUpstream(cwd).pipe(
+        Effect.catch(() => Effect.succeed(null)),
+      );
+      const remoteName =
+        currentUpstream?.remoteName ??
+        (yield* resolvePrimaryRemoteName(cwd).pipe(Effect.catch(() => Effect.succeed(null))));
+      if (!remoteName) {
+        return;
+      }
+
+      yield* executeGit(
+        "GitCore.prepareMainlineMerge.fetch",
+        cwd,
+        ["fetch", "--prune", remoteName],
+        {
+          timeoutMs: 30_000,
+          fallbackErrorMessage: "git fetch failed",
+        },
+      );
+
+      const remoteBranch = currentUpstream?.upstreamBranch ?? targetBranch;
+      const canPull =
+        currentUpstream !== null ||
+        (yield* remoteBranchExists(cwd, remoteName, remoteBranch).pipe(
+          Effect.catch(() => Effect.succeed(false)),
+        ));
+      if (!canPull) {
+        return;
+      }
+
+      yield* executeGit(
+        "GitCore.prepareMainlineMerge.pull",
+        cwd,
+        ["pull", "--ff-only", remoteName, remoteBranch],
+        {
+          timeoutMs: 30_000,
+          fallbackErrorMessage: "git pull failed",
+        },
       );
     });
 
@@ -1365,7 +1456,10 @@ const makeGitCore = Effect.gen(function* () {
       });
     });
 
-  const checkoutBranch: GitCoreShape["checkoutBranch"] = (input) =>
+  const checkoutBranchInternal = (
+    input: Parameters<GitCoreShape["checkoutBranch"]>[0],
+    options: { refreshUpstreamInBackground: boolean },
+  ) =>
     Effect.gen(function* () {
       const [localInputExists, remoteExists] = yield* Effect.all(
         [
@@ -1438,11 +1532,16 @@ const makeGitCore = Effect.gen(function* () {
         fallbackErrorMessage: "git checkout failed",
       });
 
-      // Refresh upstream refs in the background so checkout remains responsive.
-      yield* Effect.forkScoped(
-        refreshCheckedOutBranchUpstream(input.cwd).pipe(Effect.ignoreCause({ log: true })),
-      );
+      if (options.refreshUpstreamInBackground) {
+        // Refresh upstream refs in the background so interactive branch switches remain responsive.
+        yield* Effect.forkScoped(
+          refreshCheckedOutBranchUpstream(input.cwd).pipe(Effect.ignoreCause({ log: true })),
+        );
+      }
     });
+
+  const checkoutBranch: GitCoreShape["checkoutBranch"] = (input) =>
+    checkoutBranchInternal(input, { refreshUpstreamInBackground: true });
 
   const prepareMainlineMerge: GitCoreShape["prepareMainlineMerge"] = (input) =>
     Effect.gen(function* () {
@@ -1471,11 +1570,15 @@ const makeGitCore = Effect.gen(function* () {
           "GitCore.prepareMainlineMerge",
           input.cwd,
           ["merge", sourceBranch],
-          `Branch '${sourceBranch}' is already the mainline branch.`,
+          `Branch '${sourceBranch}' is already the repository default branch.`,
         );
       }
 
-      yield* checkoutBranch({ cwd: input.cwd, branch: targetBranch });
+      yield* checkoutBranchInternal(
+        { cwd: input.cwd, branch: targetBranch },
+        { refreshUpstreamInBackground: false },
+      );
+      yield* updateCheckedOutBranchBeforeMerge(input.cwd, targetBranch);
 
       const squash = input.squash === true;
       const mergeArgs = squash
