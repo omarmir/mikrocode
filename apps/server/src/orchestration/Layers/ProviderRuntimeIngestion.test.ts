@@ -1844,6 +1844,9 @@ describe("ProviderRuntimeIngestion", () => {
       (entry) =>
         entry.title === "Renamed by provider" &&
         entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) => activity.kind === "turn.diff.updated",
+        ) &&
+        entry.activities.some(
           (activity: ProviderRuntimeTestActivity) => activity.kind === "turn.plan.updated",
         ) &&
         entry.activities.some(
@@ -1889,6 +1892,18 @@ describe("ProviderRuntimeIngestion", () => {
         : undefined;
     expect(warning?.kind).toBe("runtime.warning");
     expect(warningPayload?.message).toBe("Provider got slow");
+
+    const diffUpdate = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-turn-diff-updated",
+    );
+    const diffUpdatePayload =
+      diffUpdate?.payload && typeof diffUpdate.payload === "object"
+        ? (diffUpdate.payload as Record<string, unknown>)
+        : undefined;
+    expect(diffUpdate?.kind).toBe("turn.diff.updated");
+    expect(diffUpdate?.tone).toBe("tool");
+    expect(diffUpdatePayload?.streamKind).toBe("file_change_output");
+    expect(diffUpdatePayload?.delta).toBe("diff --git a/file.txt b/file.txt\n+hello\n");
 
     const checkpoint = thread.checkpoints.find(
       (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-p1",

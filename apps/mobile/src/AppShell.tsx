@@ -828,6 +828,7 @@ const INLINE_ACTIVITY_KINDS = new Set([
   "content.delta",
   "runtime.warning",
   "runtime.error",
+  "turn.diff.updated",
   "turn.plan.updated",
   "task.started",
   "task.progress",

@@ -332,6 +332,27 @@ function runtimeEventToActivities(
       ];
     }
 
+    case "turn.diff.updated": {
+      const { delta, truncated } = truncateActivityDelta(event.payload.unifiedDiff);
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "tool",
+          kind: "turn.diff.updated",
+          summary: "Diff updated",
+          payload: {
+            streamKind: "file_change_output",
+            delta,
+            ...(truncated ? { truncated: true } : {}),
+            ...(event.itemId ? { itemId: event.itemId } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "user-input.requested": {
       return [
         {
