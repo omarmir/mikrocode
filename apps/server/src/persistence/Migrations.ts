@@ -28,6 +28,8 @@ import Migration0013 from "./Migrations/013_ProjectionThreadProposedPlans.ts";
 import Migration0014 from "./Migrations/014_ProjectionThreadProposedPlanImplementation.ts";
 import Migration0015 from "./Migrations/015_ProjectionTurnsSourceProposedPlan.ts";
 import Migration0016 from "./Migrations/016_ProjectionTurnsDispatchMode.ts";
+import Migration0017 from "./Migrations/017_ServerNotificationSettings.ts";
+import Migration0018 from "./Migrations/018_ServerNotificationSettingsBackfill.ts";
 import { Effect } from "effect";
 
 /**
@@ -57,6 +59,8 @@ const loader = Migrator.fromRecord({
   "14_ProjectionThreadProposedPlanImplementation": Migration0014,
   "15_ProjectionTurnsSourceProposedPlan": Migration0015,
   "16_ProjectionTurnsDispatchMode": Migration0016,
+  "17_ServerNotificationSettings": Migration0017,
+  "18_ServerNotificationSettingsBackfill": Migration0018,
 });
 
 /**

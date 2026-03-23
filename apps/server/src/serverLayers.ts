@@ -30,6 +30,7 @@ import { GitHubCliLive } from "./git/Layers/GitHubCli";
 import { CodexTextGenerationLive } from "./git/Layers/CodexTextGeneration";
 import { GitServiceLive } from "./git/Layers/GitService";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
+import { NotificationSettingsLive } from "./notifications/Layers/NotificationSettings";
 
 export function makeServerProviderLayer(): Layer.Layer<
   ProviderService,
@@ -109,7 +110,10 @@ export function makeServerRuntimeServicesLayer() {
     Layer.provideMerge(textGenerationLayer),
   );
 
-  return Layer.mergeAll(orchestrationReactorLayer, gitCoreLayer, gitManagerLayer).pipe(
-    Layer.provideMerge(NodeServices.layer),
-  );
+  return Layer.mergeAll(
+    orchestrationReactorLayer,
+    gitCoreLayer,
+    gitManagerLayer,
+    NotificationSettingsLive,
+  ).pipe(Layer.provideMerge(NodeServices.layer));
 }

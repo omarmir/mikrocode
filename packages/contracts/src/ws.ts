@@ -30,7 +30,13 @@ import {
   ProjectSearchEntriesInput,
   ProjectWriteFileInput,
 } from "./project";
-import { ServerConfigUpdatedPayload, ServerConversationCapabilitiesInput } from "./server";
+import {
+  ServerAppNotification,
+  ServerConfigUpdatedPayload,
+  ServerConfirmNotificationDeliveryInput,
+  ServerConversationCapabilitiesInput,
+  ServerSetNotificationSettingsInput,
+} from "./server";
 
 export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
@@ -51,11 +57,14 @@ export const WS_METHODS = {
   gitPreparePullRequestThread: "git.preparePullRequestThread",
   serverGetConfig: "server.getConfig",
   serverGetConversationCapabilities: "server.getConversationCapabilities",
+  serverSetNotificationSettings: "server.setNotificationSettings",
+  serverConfirmNotificationDelivery: "server.confirmNotificationDelivery",
 } as const;
 
 export const WS_CHANNELS = {
   serverWelcome: "server.welcome",
   serverConfigUpdated: "server.configUpdated",
+  serverNotification: "server.notification",
 } as const;
 
 const tagRequestBody = <const Tag extends string, const Fields extends Schema.Struct.Fields>(
@@ -93,6 +102,11 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.gitPreparePullRequestThread, GitPreparePullRequestThreadInput),
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverGetConversationCapabilities, ServerConversationCapabilitiesInput),
+  tagRequestBody(WS_METHODS.serverSetNotificationSettings, ServerSetNotificationSettingsInput),
+  tagRequestBody(
+    WS_METHODS.serverConfirmNotificationDelivery,
+    ServerConfirmNotificationDeliveryInput,
+  ),
 ]);
 
 export const WebSocketRequest = Schema.Struct({
@@ -126,6 +140,7 @@ export type WsWelcomePayload = typeof WsWelcomePayload.Type;
 export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.serverWelcome]: WsWelcomePayload;
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
+  readonly [WS_CHANNELS.serverNotification]: typeof ServerAppNotification.Type;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
 }
 
@@ -148,6 +163,10 @@ export const WsPushServerConfigUpdated = makeWsPushSchema(
   WS_CHANNELS.serverConfigUpdated,
   ServerConfigUpdatedPayload,
 );
+export const WsPushServerNotification = makeWsPushSchema(
+  WS_CHANNELS.serverNotification,
+  ServerAppNotification,
+);
 export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   OrchestrationEvent,
@@ -156,6 +175,7 @@ export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
 export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.serverWelcome,
   WS_CHANNELS.serverConfigUpdated,
+  WS_CHANNELS.serverNotification,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
 ]);
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
@@ -163,6 +183,7 @@ export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
 export const WsPush = Schema.Union([
   WsPushServerWelcome,
   WsPushServerConfigUpdated,
+  WsPushServerNotification,
   WsPushOrchestrationDomainEvent,
 ]);
 export type WsPush = typeof WsPush.Type;

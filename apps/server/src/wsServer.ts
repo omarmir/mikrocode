@@ -13,10 +13,13 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   type ClientOrchestrationCommand,
   type OrchestrationCommand,
+  type OrchestrationEvent,
+  type OrchestrationReadModel,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   ProjectId,
+  type ServerAppNotification,
   ThreadId,
   WS_CHANNELS,
   WS_METHODS,
@@ -28,6 +31,7 @@ import {
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
   Cause,
+  Deferred,
   Effect,
   Exit,
   FileSystem,
@@ -42,6 +46,7 @@ import {
   Struct,
 } from "effect";
 import { clamp } from "effect/Number";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createLogger } from "./logger";
@@ -72,6 +77,7 @@ import { buildServerConversationCapabilities } from "./serverConversationCapabil
 import { makeServerPushBus } from "./wsServer/pushBus.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
+import { NotificationSettingsService } from "./notifications/Services/NotificationSettings.ts";
 
 export interface ServerShape {
   readonly start: Effect.Effect<
@@ -188,7 +194,9 @@ export type ServerRuntimeServices =
   | ServerCoreRuntimeServices
   | GitManager
   | GitCore
-  | AnalyticsService;
+  | AnalyticsService
+  | NotificationSettingsService
+  | HttpClient.HttpClient;
 
 export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycleError>()(
   "ServerLifecycleError",
@@ -202,6 +210,89 @@ class RouteRequestError extends Schema.TaggedErrorClass<RouteRequestError>()("Ro
   message: Schema.String,
 }) {}
 
+const APP_NOTIFICATION_CONFIRM_TIMEOUT_MS = 2_500;
+const MAX_TRACKED_TERMINAL_TURN_NOTIFICATIONS = 5_000;
+const PUSHOVER_MESSAGES_URL = "https://api.pushover.net/1/messages.json";
+const PUSHOVER_MESSAGE_MAX_CHARS = 1_024;
+
+function truncateNotificationText(input: string, maxChars: number): string {
+  const trimmed = input.trim();
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function buildScopedThreadTitle(projectTitle: string, threadTitle: string): string {
+  if (projectTitle === threadTitle) {
+    return projectTitle;
+  }
+  return `${projectTitle} / ${threadTitle}`;
+}
+
+function buildTerminalTurnNotification(
+  event: OrchestrationEvent,
+  readModel: OrchestrationReadModel,
+): ServerAppNotification | null {
+  if (event.type !== "thread.turn-diff-completed" && event.type !== "thread.session-set") {
+    return null;
+  }
+
+  const thread = readModel.threads.find((entry) => entry.id === event.aggregateId);
+  if (!thread || thread.deletedAt !== null) {
+    return null;
+  }
+
+  const project = readModel.projects.find((entry) => entry.id === thread.projectId);
+  if (!project || project.deletedAt !== null) {
+    return null;
+  }
+
+  if (event.type === "thread.turn-diff-completed") {
+    if (event.payload.status === "missing") {
+      return null;
+    }
+
+    const kind = event.payload.status === "error" ? "turn.error" : "turn.completed";
+    const message =
+      kind === "turn.error"
+        ? truncateNotificationText(
+            thread.session?.lastError ?? "Turn failed before the session could recover.",
+            PUSHOVER_MESSAGE_MAX_CHARS,
+          )
+        : "Turn completed";
+
+    return {
+      notificationId: `notification:${event.payload.turnId}:${kind}:${event.sequence}`,
+      kind,
+      projectId: project.id,
+      threadId: thread.id,
+      turnId: event.payload.turnId,
+      title: buildScopedThreadTitle(project.title, thread.title),
+      message,
+      createdAt: event.occurredAt,
+    };
+  }
+
+  if (event.payload.session.status !== "error" || event.payload.session.activeTurnId === null) {
+    return null;
+  }
+
+  return {
+    notificationId: `notification:${event.payload.session.activeTurnId}:turn.error:${event.sequence}`,
+    kind: "turn.error",
+    projectId: project.id,
+    threadId: thread.id,
+    turnId: event.payload.session.activeTurnId,
+    title: buildScopedThreadTitle(project.title, thread.title),
+    message: truncateNotificationText(
+      event.payload.session.lastError ?? "Provider session error",
+      PUSHOVER_MESSAGE_MAX_CHARS,
+    ),
+    createdAt: event.occurredAt,
+  };
+}
+
 export const createServer = Effect.fn(function* (): Effect.fn.Return<
   http.Server,
   ServerLifecycleError,
@@ -214,10 +305,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const gitManager = yield* GitManager;
   const providerHealth = yield* ProviderHealth;
   const git = yield* GitCore;
+  const httpClient = yield* HttpClient.HttpClient;
+  const notificationSettings = yield* NotificationSettingsService;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
   const clients = yield* Ref.make(new Set<WebSocket>());
+  const notifiedTerminalTurns = yield* Ref.make(new Set<string>());
+  const pendingNotificationAcks = yield* Ref.make(
+    new Map<string, Deferred.Deferred<void, never>>(),
+  );
   const logger = createLogger("ws");
   const readiness = yield* makeServerReadiness;
   function logOutgoingPush(push: WsPushEnvelopeBase, recipients: number) {
@@ -232,6 +329,124 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const pushBus = yield* makeServerPushBus({ clients, logOutgoingPush });
   yield* readiness.markPushBusReady;
+
+  const clearPendingNotificationAck = (notificationId: string) =>
+    Ref.update(pendingNotificationAcks, (current) => {
+      const next = new Map(current);
+      next.delete(notificationId);
+      return next;
+    });
+
+  const confirmAppNotificationDelivery = Effect.fnUntraced(function* (notificationId: string) {
+    const pending = yield* Ref.get(pendingNotificationAcks).pipe(
+      Effect.map((current) => current.get(notificationId) ?? null),
+    );
+    if (!pending) {
+      return;
+    }
+
+    yield* Effect.exit(Deferred.succeed(pending, undefined)).pipe(Effect.asVoid);
+  });
+
+  const sendPushoverFallback = Effect.fnUntraced(function* (notification: ServerAppNotification) {
+    const settings = yield* notificationSettings.getSettings;
+    const { appToken, userKey, configured } = settings.pushover;
+    if (!configured || appToken === null || userKey === null) {
+      return false;
+    }
+
+    const body = new URLSearchParams({
+      token: appToken,
+      user: userKey,
+      title: notification.title,
+      message: notification.message,
+    }).toString();
+
+    const request = HttpClientRequest.post(PUSHOVER_MESSAGES_URL).pipe(
+      HttpClientRequest.setHeader("content-type", "application/x-www-form-urlencoded"),
+      HttpClientRequest.bodyText(body),
+    );
+    yield* httpClient.execute(request).pipe(Effect.flatMap(HttpClientResponse.filterStatusOk));
+
+    return true;
+  });
+
+  const deliverTerminalTurnNotification = Effect.fnUntraced(function* (
+    notification: ServerAppNotification,
+  ) {
+    const terminalTurnKey = `${notification.turnId}:${notification.kind}`;
+    const shouldDeliver = yield* Ref.modify(notifiedTerminalTurns, (current) => {
+      if (current.has(terminalTurnKey)) {
+        return [false, current] as const;
+      }
+
+      const next = new Set(current);
+      next.add(terminalTurnKey);
+      while (next.size > MAX_TRACKED_TERMINAL_TURN_NOTIFICATIONS) {
+        const oldestKey = next.values().next().value;
+        if (oldestKey === undefined) {
+          break;
+        }
+        next.delete(oldestKey);
+      }
+      return [true, next] as const;
+    });
+    if (!shouldDeliver) {
+      return;
+    }
+
+    const hasOpenClient = yield* Ref.get(clients).pipe(
+      Effect.map((current) =>
+        Array.from(current).some((client) => client.readyState === client.OPEN),
+      ),
+    );
+
+    if (!hasOpenClient) {
+      yield* sendPushoverFallback(notification);
+      return;
+    }
+
+    const deliveryAck = yield* Deferred.make<void, never>();
+    yield* Ref.update(pendingNotificationAcks, (current) => {
+      const next = new Map(current);
+      next.set(notification.notificationId, deliveryAck);
+      return next;
+    });
+
+    yield* pushBus.publishAll(WS_CHANNELS.serverNotification, notification);
+
+    const appConfirmed = yield* Deferred.await(deliveryAck).pipe(
+      Effect.timeoutOption(APP_NOTIFICATION_CONFIRM_TIMEOUT_MS),
+      Effect.map((result) => result._tag === "Some"),
+      Effect.ensuring(clearPendingNotificationAck(notification.notificationId)),
+    );
+    if (appConfirmed) {
+      return;
+    }
+
+    yield* sendPushoverFallback(notification);
+  });
+
+  const maybeDeliverTerminalTurnNotification = Effect.fnUntraced(function* (
+    event: OrchestrationEvent,
+  ) {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const notification = buildTerminalTurnNotification(event, readModel);
+    if (!notification) {
+      return;
+    }
+
+    yield* deliverTerminalTurnNotification(notification).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to deliver terminal turn notification", {
+          notificationId: notification.notificationId,
+          turnId: notification.turnId,
+          kind: notification.kind,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+  });
 
   const normalizeDispatchCommand = Effect.fnUntraced(function* (input: {
     readonly command: ClientOrchestrationCommand;
@@ -448,9 +663,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const subscriptionsScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(subscriptionsScope, Exit.void));
 
-  yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
-    pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event),
-  ).pipe(Effect.forkIn(subscriptionsScope));
+  yield* Scope.provide(
+    Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
+      pushBus
+        .publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event)
+        .pipe(
+          Effect.tap(() =>
+            Scope.provide(
+              maybeDeliverTerminalTurnNotification(event).pipe(Effect.forkScoped, Effect.asVoid),
+              subscriptionsScope,
+            ),
+          ),
+        ),
+    ).pipe(Effect.forkScoped),
+    subscriptionsScope,
+  );
 
   yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
   yield* readiness.markOrchestrationSubscriptionsReady;
@@ -532,7 +759,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     Effect.all([closeAllClients, closeWebSocketServer.pipe(Effect.ignoreCause({ log: true }))]),
   );
 
-  const routeRequest = Effect.fnUntraced(function* (request: WebSocketRequest) {
+  const routeRequest = Effect.fnUntraced(function* (_ws: WebSocket, request: WebSocketRequest) {
     switch (request.body._tag) {
       case ORCHESTRATION_WS_METHODS.getSnapshot:
         return yield* projectionReadModelQuery.getSnapshot();
@@ -641,7 +868,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.gitInit:
         return yield* git.initRepo(stripRequestTag(request.body));
       case WS_METHODS.serverGetConfig:
-        return { cwd, providers: yield* providerHealth.getStatuses };
+        return {
+          cwd,
+          providers: yield* providerHealth.getStatuses,
+          notifications: yield* notificationSettings.getSettings,
+        };
       case WS_METHODS.serverGetConversationCapabilities: {
         const body = stripRequestTag(request.body);
         const snapshot = yield* projectionReadModelQuery.getSnapshot();
@@ -659,6 +890,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           providerStatuses: yield* providerHealth.getStatuses,
         });
       }
+      case WS_METHODS.serverSetNotificationSettings: {
+        const settings = yield* notificationSettings.setSettings(stripRequestTag(request.body));
+        yield* pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
+          providers: yield* providerHealth.getStatuses,
+          notifications: {
+            pushoverConfigured: settings.pushover.configured,
+          },
+        });
+        return settings;
+      }
+      case WS_METHODS.serverConfirmNotificationDelivery:
+        yield* confirmAppNotificationDelivery(stripRequestTag(request.body).notificationId);
+        return {};
       default: {
         const _exhaustiveCheck: never = request.body;
         return yield* new RouteRequestError({
@@ -691,7 +935,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       });
     }
 
-    const result = yield* Effect.exit(routeRequest(request.success));
+    const result = yield* Effect.exit(routeRequest(ws, request.success));
     if (Exit.isFailure(result)) {
       return yield* sendWsResponse({
         id: request.success.id,

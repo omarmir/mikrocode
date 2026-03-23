@@ -1,6 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import { Feather } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
+import * as Notifications from "expo-notifications";
 import Prism from "prismjs";
 import "prismjs/components/prism-bash";
 import "prismjs/components/prism-clike";
@@ -26,6 +27,7 @@ import {
   useState,
 } from "react";
 import {
+  AppState,
   Animated,
   Easing,
   Image,
@@ -98,6 +100,7 @@ const FALLBACK_MODEL = MOBILE_DEFAULT_MODEL;
 const PERSISTENT_SIDEBAR_BREAKPOINT = 920;
 const WIDE_LAYOUT_BREAKPOINT = 1180;
 const PANEL_ANIMATION_DURATION_MS = 220;
+const DEVICE_NOTIFICATION_CHANNEL_ID = "turn-updates";
 const TERMINAL_FONT_FAMILY = Platform.select({
   ios: "Menlo",
   android: "monospace",
@@ -196,6 +199,13 @@ function getPrismGrammar(language?: string) {
   }
   const grammar = Prism.languages[normalizedLanguage];
   return grammar ? { grammar, language: normalizedLanguage } : null;
+}
+
+function formatServerNotificationToast(notification: {
+  readonly title: string;
+  readonly message: string;
+}) {
+  return `${notification.title}: ${notification.message}`;
 }
 
 function getCodeTokenStyles(
@@ -1322,7 +1332,9 @@ function AppShellContent() {
     deleteProject,
     disconnect,
     deleteThread,
+    dismissServerNotification,
     errorMessage,
+    confirmNotificationDelivery,
     gitCheckout,
     gitCreateBranch,
     gitDeleteBranch,
@@ -1342,6 +1354,8 @@ function AppShellContent() {
     searchDirectory,
     sendTurn,
     serverConfig,
+    serverNotifications,
+    setNotificationSettings,
     setConnectionSettings,
     settingsReady,
     snapshot,
@@ -1377,6 +1391,8 @@ function AppShellContent() {
 
   const [navMenuOpen, setNavMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pushoverAppTokenDraft, setPushoverAppTokenDraft] = useState("");
+  const [pushoverUserKeyDraft, setPushoverUserKeyDraft] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [hiddenRecentThreadIds, setHiddenRecentThreadIds] = useState<string[]>([]);
@@ -1422,7 +1438,9 @@ function AppShellContent() {
   const messageMetaOpacity = useRef(new Animated.Value(0)).current;
   const messageMetaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deviceNotificationChannelReadyRef = useRef(false);
   const messagesScrollRef = useRef<ScrollView | null>(null);
+  const processingServerNotificationRef = useRef(false);
   const waitingIndicatorMotion = useRef(new Animated.Value(0)).current;
 
   const allProjects = sortProjects(snapshot?.projects ?? []);
@@ -1454,6 +1472,7 @@ function AppShellContent() {
   const draftAttachments = selectedThread ? (threadDraftAttachments[selectedThread.id] ?? []) : [];
   const isConnected = status === "connected";
   const providers = serverConfig?.providers ?? [];
+  const notificationsConfigured = serverConfig?.notifications.pushover.configured ?? false;
   const serverDirectoryHint =
     serverConfig?.cwd ?? welcome?.cwd ?? selectedProject?.workspaceRoot ?? "";
   const selectedThreadConversationId = selectedThread?.id ?? null;
@@ -1552,6 +1571,65 @@ function AppShellContent() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    setPushoverAppTokenDraft(serverConfig?.notifications.pushover.appToken ?? "");
+    setPushoverUserKeyDraft(serverConfig?.notifications.pushover.userKey ?? "");
+  }, [serverConfig?.notifications.pushover.appToken, serverConfig?.notifications.pushover.userKey]);
+
+  useEffect(() => {
+    if (processingServerNotificationRef.current || serverNotifications.length === 0) {
+      return;
+    }
+
+    processingServerNotificationRef.current = true;
+    const nextNotification = serverNotifications[0];
+    if (!nextNotification) {
+      processingServerNotificationRef.current = false;
+      return;
+    }
+
+    void (async () => {
+      try {
+        if (AppState.currentState === "active") {
+          showToast(formatServerNotificationToast(nextNotification));
+          await confirmNotificationDelivery({
+            notificationId: nextNotification.notificationId,
+            delivery: "toast",
+          });
+          return;
+        }
+
+        const deviceNotificationsReady = await ensureDeviceNotificationsReady(false).catch(
+          () => false,
+        );
+        if (!deviceNotificationsReady) {
+          return;
+        }
+
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: nextNotification.title,
+            body: nextNotification.message,
+            data: {
+              threadId: nextNotification.threadId,
+              turnId: nextNotification.turnId,
+              kind: nextNotification.kind,
+            },
+          },
+          trigger: null,
+        });
+
+        await confirmNotificationDelivery({
+          notificationId: nextNotification.notificationId,
+          delivery: "device",
+        });
+      } finally {
+        dismissServerNotification(nextNotification.notificationId);
+        processingServerNotificationRef.current = false;
+      }
+    })();
+  }, [confirmNotificationDelivery, dismissServerNotification, serverNotifications]);
 
   useEffect(() => {
     if (!navMenuOpen) {
@@ -2171,6 +2249,66 @@ function AppShellContent() {
       setToastMessage(null);
       toastTimerRef.current = null;
     }, 1800);
+  };
+
+  const ensureDeviceNotificationsReady = async (promptForPermission: boolean) => {
+    if (Platform.OS === "android" && !deviceNotificationChannelReadyRef.current) {
+      await Notifications.setNotificationChannelAsync(DEVICE_NOTIFICATION_CHANNEL_ID, {
+        name: "Turn updates",
+        importance: Notifications.AndroidImportance.DEFAULT,
+      });
+      deviceNotificationChannelReadyRef.current = true;
+    }
+
+    let permissions = await Notifications.getPermissionsAsync();
+    if (!permissions.granted && promptForPermission) {
+      permissions = await Notifications.requestPermissionsAsync({
+        ios: {
+          allowAlert: true,
+          allowBadge: false,
+          allowSound: false,
+        },
+      });
+    }
+
+    return permissions.granted;
+  };
+
+  const handleSaveNotificationSettings = async (input?: {
+    readonly appToken: string | null;
+    readonly userKey: string | null;
+  }) => {
+    const appToken =
+      input?.appToken ??
+      (pushoverAppTokenDraft.trim().length > 0 ? pushoverAppTokenDraft.trim() : null);
+    const userKey =
+      input?.userKey ??
+      (pushoverUserKeyDraft.trim().length > 0 ? pushoverUserKeyDraft.trim() : null);
+
+    const notifications = await setNotificationSettings({
+      pushover: {
+        appToken,
+        userKey,
+      },
+    });
+
+    const deviceNotificationsEnabled = await ensureDeviceNotificationsReady(true).catch(
+      () => false,
+    );
+    if (appToken === null) {
+      setPushoverAppTokenDraft("");
+    }
+    if (userKey === null) {
+      setPushoverUserKeyDraft("");
+    }
+
+    showToast(
+      notifications.pushover.configured
+        ? deviceNotificationsEnabled
+          ? "Notification delivery updated"
+          : "Saved. Device alerts are disabled, so missed app delivery falls back to Pushover."
+        : "Notification settings cleared",
+    );
   };
 
   const closeConversationPicker = () => {
@@ -4081,6 +4219,62 @@ function AppShellContent() {
           <MetaRow label="Resolved URL" value={resolvedWebSocketUrl ?? "Unavailable"} />
           <MetaRow label="Server cwd" value={serverConfig?.cwd ?? welcome?.cwd ?? "Unavailable"} />
           <MetaRow label="Snapshot sequence" value={snapshotSequenceLabel} />
+        </View>
+
+        <View style={styles.settingsSection}>
+          <Text style={styles.sectionEyebrow}>Notifications</Text>
+          <Text style={styles.helperText}>
+            The server tries app delivery first. Foreground sessions show a toast, background
+            sessions schedule a device notification, and Pushover is used only when the app does not
+            confirm delivery in time.
+          </Text>
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            onChangeText={setPushoverAppTokenDraft}
+            placeholder="Pushover app token"
+            placeholderTextColor={TERMINAL_MUTED}
+            secureTextEntry
+            style={styles.input}
+            value={pushoverAppTokenDraft}
+          />
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            onChangeText={setPushoverUserKeyDraft}
+            placeholder="Pushover user key"
+            placeholderTextColor={TERMINAL_MUTED}
+            secureTextEntry
+            style={styles.input}
+            value={pushoverUserKeyDraft}
+          />
+          <MetaRow
+            accent
+            label="Fallback"
+            value={notificationsConfigured ? "Pushover configured" : "App delivery only"}
+          />
+          <View style={styles.inlineButtonRow}>
+            <ActionButton
+              disabled={!isConnected || busyAction !== null}
+              label="Save alerts"
+              onPress={() => {
+                void handleSaveNotificationSettings();
+              }}
+            />
+            <ActionButton
+              disabled={!isConnected || busyAction !== null}
+              emphasis="secondary"
+              label="Clear"
+              onPress={() => {
+                setPushoverAppTokenDraft("");
+                setPushoverUserKeyDraft("");
+                void handleSaveNotificationSettings({
+                  appToken: null,
+                  userKey: null,
+                });
+              }}
+            />
+          </View>
         </View>
 
         <View style={styles.settingsSection}>

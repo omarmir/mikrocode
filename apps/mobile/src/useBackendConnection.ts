@@ -21,9 +21,11 @@ import type {
 import {
   buildDisplayWebSocketUrl,
   buildWebSocketUrl,
+  type ConfirmNotificationDeliveryInput,
   createClientId,
   MOBILE_WS_CHANNELS,
   MOBILE_WS_METHODS,
+  type MobileServerNotification,
   type ConnectionStatus,
   type ApprovalResponseInput,
   type CreateDirectoryInput,
@@ -41,6 +43,7 @@ import {
   type RpcResponse,
   type SearchDirectoryInput,
   type SendTurnInput,
+  type SetNotificationSettingsInput,
   type StopSessionInput,
   type UserInputResponseInput,
 } from "./protocol";
@@ -173,6 +176,7 @@ export function useBackendConnection() {
   const [pendingServerResponses, setPendingServerResponses] = useState<
     Record<string, PendingServerResponseMarker>
   >({});
+  const [serverNotifications, setServerNotifications] = useState<MobileServerNotification[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRequestsRef = useRef<Map<string, PendingRequest>>(new Map());
@@ -238,6 +242,7 @@ export function useBackendConnection() {
     clearRefreshTimer();
     rejectPendingRequests("The socket disconnected.");
     setPendingServerResponses({});
+    setServerNotifications([]);
 
     const currentSocket = socketRef.current;
     socketRef.current = null;
@@ -357,15 +362,37 @@ export function useBackendConnection() {
     }
 
     if (message.channel === MOBILE_WS_CHANNELS.serverConfigUpdated) {
+      const payload = message.data as {
+        readonly providers?: ServerConfig["providers"];
+        readonly notifications?: {
+          readonly pushoverConfigured: boolean;
+        };
+      };
       startTransition(() => {
         setServerConfig((current) =>
           current
             ? {
                 ...current,
-                providers: (message.data as ServerConfig["providers"]) ?? current.providers,
+                providers: payload.providers ?? current.providers,
+                notifications: payload.notifications
+                  ? {
+                      ...current.notifications,
+                      pushover: {
+                        ...current.notifications.pushover,
+                        configured: payload.notifications.pushoverConfigured,
+                      },
+                    }
+                  : current.notifications,
               }
             : current,
         );
+      });
+      return;
+    }
+
+    if (message.channel === MOBILE_WS_CHANNELS.serverNotification) {
+      startTransition(() => {
+        setServerNotifications((current) => [...current, message.data as MobileServerNotification]);
       });
       return;
     }
@@ -767,6 +794,49 @@ export function useBackendConnection() {
     },
   );
 
+  const setNotificationSettings = useStableEvent(
+    async (input: SetNotificationSettingsInput): Promise<ServerConfig["notifications"]> => {
+      const notifications = await runBusyCommand("Saving notifications", () =>
+        request<ServerConfig["notifications"]>(
+          MOBILE_WS_METHODS.serverSetNotificationSettings,
+          input,
+        ),
+      );
+
+      startTransition(() => {
+        setServerConfig((current) =>
+          current
+            ? {
+                ...current,
+                notifications,
+              }
+            : current,
+        );
+      });
+
+      return notifications;
+    },
+  );
+
+  const confirmNotificationDelivery = useStableEvent(
+    async (input: ConfirmNotificationDeliveryInput): Promise<boolean> => {
+      try {
+        await request<void>(MOBILE_WS_METHODS.serverConfirmNotificationDelivery, input);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  );
+
+  const dismissServerNotification = useStableEvent((notificationId: string) => {
+    startTransition(() => {
+      setServerNotifications((current) =>
+        current.filter((notification) => notification.notificationId !== notificationId),
+      );
+    });
+  });
+
   const interruptTurn = useStableEvent(async (input: InterruptTurnInput) => {
     await runBusyCommand("Interrupting turn", () =>
       dispatchCommand(
@@ -951,6 +1021,7 @@ export function useBackendConnection() {
     clearError: () => setErrorMessage(null),
     snapshot,
     serverConfig,
+    serverNotifications,
     welcome,
     lastPushSequence,
     isRefreshingSnapshot,
@@ -974,6 +1045,12 @@ export function useBackendConnection() {
     }) => updateThreadInteractionMode(input),
     getConversationCapabilities: (input: GetConversationCapabilitiesInput) =>
       getConversationCapabilities(input),
+    setNotificationSettings: (input: SetNotificationSettingsInput) =>
+      setNotificationSettings(input),
+    confirmNotificationDelivery: (input: ConfirmNotificationDeliveryInput) =>
+      confirmNotificationDelivery(input),
+    dismissServerNotification: (notificationId: string) =>
+      dismissServerNotification(notificationId),
     interruptTurn: (input: InterruptTurnInput) => interruptTurn(input),
     stopSession: (input: StopSessionInput) => stopSession(input),
     respondToApproval: (input: ApprovalResponseInput) => respondToApproval(input),

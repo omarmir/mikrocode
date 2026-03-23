@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
+import { IsoDateTime, ProjectId, ThreadId, TrimmedNonEmptyString, TurnId } from "./baseSchemas";
 import { ProviderKind, RuntimeMode } from "./orchestration";
 
 export const ServerProviderStatusState = Schema.Literals(["ready", "warning", "error"]);
@@ -61,13 +61,68 @@ export const ServerConversationCapabilities = Schema.Struct({
 });
 export type ServerConversationCapabilities = typeof ServerConversationCapabilities.Type;
 
+export const ServerNotificationDelivery = Schema.Literals(["toast", "device"]);
+export type ServerNotificationDelivery = typeof ServerNotificationDelivery.Type;
+
+export const ServerAppNotificationKind = Schema.Literals(["turn.completed", "turn.error"]);
+export type ServerAppNotificationKind = typeof ServerAppNotificationKind.Type;
+
+export const ServerAppNotification = Schema.Struct({
+  notificationId: TrimmedNonEmptyString,
+  kind: ServerAppNotificationKind,
+  projectId: ProjectId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  title: TrimmedNonEmptyString,
+  message: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export type ServerAppNotification = typeof ServerAppNotification.Type;
+
+export const ServerConfirmNotificationDeliveryInput = Schema.Struct({
+  notificationId: TrimmedNonEmptyString,
+  delivery: ServerNotificationDelivery,
+});
+export type ServerConfirmNotificationDeliveryInput =
+  typeof ServerConfirmNotificationDeliveryInput.Type;
+
+const PushoverCredential = TrimmedNonEmptyString.check(Schema.isPattern(/^[A-Za-z0-9]{30}$/));
+export type PushoverCredential = typeof PushoverCredential.Type;
+
+export const ServerPushoverNotificationSettings = Schema.Struct({
+  appToken: Schema.NullOr(PushoverCredential),
+  userKey: Schema.NullOr(PushoverCredential),
+  configured: Schema.Boolean,
+});
+export type ServerPushoverNotificationSettings = typeof ServerPushoverNotificationSettings.Type;
+
+export const ServerNotificationSettings = Schema.Struct({
+  pushover: ServerPushoverNotificationSettings,
+});
+export type ServerNotificationSettings = typeof ServerNotificationSettings.Type;
+
+export const ServerNotificationSettingsSummary = Schema.Struct({
+  pushoverConfigured: Schema.Boolean,
+});
+export type ServerNotificationSettingsSummary = typeof ServerNotificationSettingsSummary.Type;
+
+export const ServerSetNotificationSettingsInput = Schema.Struct({
+  pushover: Schema.Struct({
+    appToken: Schema.NullOr(PushoverCredential),
+    userKey: Schema.NullOr(PushoverCredential),
+  }),
+});
+export type ServerSetNotificationSettingsInput = typeof ServerSetNotificationSettingsInput.Type;
+
 export const ServerConfig = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   providers: ServerProviderStatuses,
+  notifications: ServerNotificationSettings,
 });
 export type ServerConfig = typeof ServerConfig.Type;
 
 export const ServerConfigUpdatedPayload = Schema.Struct({
   providers: ServerProviderStatuses,
+  notifications: Schema.optional(ServerNotificationSettingsSummary),
 });
 export type ServerConfigUpdatedPayload = typeof ServerConfigUpdatedPayload.Type;

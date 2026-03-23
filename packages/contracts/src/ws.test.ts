@@ -73,6 +73,22 @@ it.effect("accepts git.preparePullRequestThread requests", () =>
   }),
 );
 
+it.effect("accepts notification settings update requests", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWebSocketRequest({
+      id: "req-notify-1",
+      body: {
+        _tag: WS_METHODS.serverSetNotificationSettings,
+        pushover: {
+          appToken: "abcdefghijklmnopqrstuvwxyz1234",
+          userKey: "1234567890abcdefghij1234567890",
+        },
+      },
+    });
+    assert.strictEqual(parsed.body._tag, WS_METHODS.serverSetNotificationSettings);
+  }),
+);
+
 it.effect("accepts typed websocket push envelopes with sequence", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeWsResponse({
@@ -92,6 +108,32 @@ it.effect("accepts typed websocket push envelopes with sequence", () =>
     assert.strictEqual(parsed.type, "push");
     assert.strictEqual(parsed.sequence, 1);
     assert.strictEqual(parsed.channel, WS_CHANNELS.serverWelcome);
+  }),
+);
+
+it.effect("accepts server notification push envelopes", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWsResponse({
+      type: "push",
+      sequence: 3,
+      channel: WS_CHANNELS.serverNotification,
+      data: {
+        notificationId: "notif-1",
+        kind: "turn.completed",
+        projectId: "project-1",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        title: "Project / Session",
+        message: "Turn completed",
+        createdAt: "2026-03-23T12:00:00.000Z",
+      },
+    });
+
+    if (!("type" in parsed) || parsed.type !== "push") {
+      assert.fail("expected websocket response to decode as a push envelope");
+    }
+
+    assert.strictEqual(parsed.channel, WS_CHANNELS.serverNotification);
   }),
 );
 

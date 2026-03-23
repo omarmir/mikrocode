@@ -12,8 +12,11 @@ import type {
   ProviderInteractionMode,
   ProviderUserInputAnswers,
   RuntimeMode,
+  ServerAppNotification,
   ServerConfig,
+  ServerConfirmNotificationDeliveryInput,
   ServerConversationCapabilities,
+  ServerSetNotificationSettingsInput,
   TurnDispatchMode,
   UploadChatAttachment,
   WsWelcomePayload,
@@ -34,11 +37,14 @@ export const MOBILE_WS_METHODS = {
   gitStatus: "git.status",
   serverGetConfig: "server.getConfig",
   serverGetConversationCapabilities: "server.getConversationCapabilities",
+  serverSetNotificationSettings: "server.setNotificationSettings",
+  serverConfirmNotificationDelivery: "server.confirmNotificationDelivery",
 } as const;
 
 export const MOBILE_WS_CHANNELS = {
   domainEvent: "orchestration.domainEvent",
   serverConfigUpdated: "server.configUpdated",
+  serverNotification: "server.notification",
   serverWelcome: "server.welcome",
 } as const;
 
@@ -139,6 +145,10 @@ export interface GitPrepareMainlineMergeInput extends GitWorkspaceInput {
 export interface GetConversationCapabilitiesInput {
   readonly threadId: string;
 }
+
+export type SetNotificationSettingsInput = ServerSetNotificationSettingsInput;
+export type ConfirmNotificationDeliveryInput = ServerConfirmNotificationDeliveryInput;
+export type MobileServerNotification = ServerAppNotification;
 
 export interface MobileBackendState {
   readonly snapshot: OrchestrationReadModel | null;
