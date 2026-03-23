@@ -801,6 +801,52 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("maps thread token usage updates to canonical runtime events", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-thread-token-usage"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        createdAt: new Date().toISOString(),
+        method: "thread/tokenUsage/updated",
+        payload: {
+          threadId: "provider-thread-1",
+          turnId: "provider-turn-1",
+          tokenUsage: {
+            total: {
+              totalTokens: 11321,
+            },
+            modelContextWindow: 258400,
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+
+      assert.equal(firstEvent.value.type, "thread.token-usage.updated");
+      if (firstEvent.value.type !== "thread.token-usage.updated") {
+        return;
+      }
+
+      assert.equal(firstEvent.value.turnId, "turn-1");
+      assert.deepEqual(firstEvent.value.payload.usage, {
+        total: {
+          totalTokens: 11321,
+        },
+        modelContextWindow: 258400,
+      });
+    }),
+  );
+
   it.effect("prefers manager-assigned turn ids for Codex task events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

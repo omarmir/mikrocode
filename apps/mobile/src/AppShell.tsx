@@ -732,6 +732,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
 }
 
+function readPayloadNumber(payload: unknown, key: string) {
+  const record = asRecord(payload);
+  const value = record?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function readPayloadString(payload: unknown, key: string) {
   const record = asRecord(payload);
   const value = record?.[key];
@@ -910,6 +916,57 @@ function findLatestActiveTaskType(thread: OrchestrationThread | null): string | 
   }
 
   return null;
+}
+
+function readRemainingContextPercent(usage: unknown): number | null {
+  const usageRecord = asRecord(usage);
+  const normalizedUsage = asRecord(usageRecord?.tokenUsage) ?? usageRecord;
+  if (!normalizedUsage) {
+    return null;
+  }
+
+  const totalTokens =
+    readPayloadNumber(normalizedUsage.total, "totalTokens") ??
+    readPayloadNumber(normalizedUsage.total, "total_tokens") ??
+    readPayloadNumber(normalizedUsage, "totalTokens") ??
+    readPayloadNumber(normalizedUsage, "total_tokens");
+  const modelContextWindow =
+    readPayloadNumber(normalizedUsage, "modelContextWindow") ??
+    readPayloadNumber(normalizedUsage, "model_context_window");
+  if (totalTokens === null || modelContextWindow === null || modelContextWindow <= 0) {
+    return null;
+  }
+
+  const remainingPercent = ((modelContextWindow - totalTokens) / modelContextWindow) * 100;
+  return Math.max(0, Math.min(100, Math.round(remainingPercent)));
+}
+
+function findThreadRemainingContextPercent(thread: OrchestrationThread | null): number | null {
+  if (!thread) {
+    return null;
+  }
+
+  for (const activity of sortActivities(thread.activities).toReversed()) {
+    if (activity.kind !== "thread.token-usage.updated") {
+      continue;
+    }
+
+    const remainingPercent = readRemainingContextPercent(asRecord(activity.payload)?.usage);
+    if (remainingPercent !== null) {
+      return remainingPercent;
+    }
+  }
+
+  return null;
+}
+
+function formatThreadModelLabel(thread: OrchestrationThread | null) {
+  const model = thread?.model ?? FALLBACK_MODEL;
+  const remainingContextPercent = findThreadRemainingContextPercent(thread);
+  if (remainingContextPercent === null) {
+    return model;
+  }
+  return `${model} (${remainingContextPercent}%)`;
 }
 
 function getUserInputAnswerKey(
@@ -2936,7 +2993,7 @@ function AppShellContent() {
             ]}
           >
             <Text numberOfLines={1} style={styles.composerControlValue}>
-              {selectedThread?.model ?? FALLBACK_MODEL}
+              {formatThreadModelLabel(selectedThread)}
             </Text>
           </Pressable>
           <Pressable

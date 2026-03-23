@@ -409,6 +409,23 @@ function runtimeEventToActivities(
       ];
     }
 
+    case "thread.token-usage.updated": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "thread.token-usage.updated",
+          summary: "Context usage updated",
+          payload: {
+            usage: event.payload.usage,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "item.updated": {
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];

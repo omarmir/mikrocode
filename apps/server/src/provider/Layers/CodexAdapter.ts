@@ -708,12 +708,13 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "thread/tokenUsage/updated") {
+    const usage = asObject(payload?.tokenUsage) ?? event.payload ?? {};
     return [
       {
         type: "thread.token-usage.updated",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          usage: event.payload ?? {},
+          usage,
         },
       },
     ];

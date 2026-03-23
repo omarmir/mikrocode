@@ -2001,6 +2001,49 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe("# Plan title");
   });
 
+  it("projects thread token usage updates into thread activities", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "thread.token-usage.updated",
+      eventId: asEventId("evt-thread-token-usage"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-token-usage"),
+      payload: {
+        usage: {
+          total: {
+            totalTokens: 11321,
+          },
+          modelContextWindow: 258400,
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "thread.token-usage.updated",
+      ),
+    );
+
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.kind === "thread.token-usage.updated",
+    );
+
+    expect(activity?.turnId).toBe("turn-token-usage");
+    expect(activity?.summary).toBe("Context usage updated");
+    expect(activity?.payload).toMatchObject({
+      usage: {
+        total: {
+          totalTokens: 11321,
+        },
+        modelContextWindow: 258400,
+      },
+    });
+  });
+
   it("projects structured user input request and resolution as thread activities", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
