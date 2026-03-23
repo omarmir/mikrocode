@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 
 const mode = process.argv[2] ?? "dev";
+const forwardedArgs = process.argv.slice(3);
 
 const MODE_ARGS = {
   dev: ["run", "dev", "--filter=t3", "--filter=@t3tools/mobile", "--parallel"],
@@ -15,7 +16,12 @@ if (!(mode in MODE_ARGS)) {
   process.exit(1);
 }
 
-const child = spawn("bun", ["x", "turbo", ...MODE_ARGS[mode as keyof typeof MODE_ARGS]], {
+const turboArgs =
+  forwardedArgs.length > 0
+    ? ["x", "turbo", ...MODE_ARGS[mode as keyof typeof MODE_ARGS], "--", ...forwardedArgs]
+    : ["x", "turbo", ...MODE_ARGS[mode as keyof typeof MODE_ARGS]];
+
+const child = spawn("bun", turboArgs, {
   stdio: "inherit",
   env: process.env,
   shell: process.platform === "win32",
