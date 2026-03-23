@@ -2,6 +2,7 @@ import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3to
 import {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
+  OrchestrationQueuedTurn,
   OrchestrationSession,
   OrchestrationThread,
 } from "@t3tools/contracts";
@@ -20,6 +21,7 @@ import {
   ThreadMetaUpdatedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
+  ThreadTurnStartRequestedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
@@ -153,6 +155,28 @@ function compareThreadActivities(
   return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 }
 
+function compareQueuedTurns(left: OrchestrationQueuedTurn, right: OrchestrationQueuedTurn): number {
+  const leftPriority = left.dispatchMode === "live" ? 0 : 1;
+  const rightPriority = right.dispatchMode === "live" ? 0 : 1;
+  if (leftPriority !== rightPriority) {
+    return leftPriority - rightPriority;
+  }
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt.localeCompare(right.createdAt);
+  }
+  return left.messageId.localeCompare(right.messageId);
+}
+
+function upsertQueuedTurn(
+  queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>,
+  queuedTurn: OrchestrationQueuedTurn,
+): ReadonlyArray<OrchestrationQueuedTurn> {
+  return [
+    ...queuedTurns.filter((entry) => entry.messageId !== queuedTurn.messageId),
+    queuedTurn,
+  ].toSorted(compareQueuedTurns);
+}
+
 export function createEmptyReadModel(nowIso: string): OrchestrationReadModel {
   return {
     snapshotSequence: 0,
@@ -262,6 +286,7 @@ export function projectEvent(
             updatedAt: payload.updatedAt,
             deletedAt: null,
             messages: [],
+            queuedTurns: [],
             activities: [],
             checkpoints: [],
             session: null,
@@ -391,6 +416,39 @@ export function projectEvent(
         };
       });
 
+    case "thread.turn-start-requested":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadTurnStartRequestedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            queuedTurns: upsertQueuedTurn(thread.queuedTurns, {
+              messageId: payload.messageId,
+              dispatchMode: payload.dispatchMode ?? "live",
+              ...(payload.provider !== undefined ? { provider: payload.provider } : {}),
+              ...(payload.model !== undefined ? { model: payload.model } : {}),
+              ...(payload.modelOptions !== undefined ? { modelOptions: payload.modelOptions } : {}),
+              ...(payload.providerOptions !== undefined
+                ? { providerOptions: payload.providerOptions }
+                : {}),
+              interactionMode: payload.interactionMode,
+              createdAt: payload.createdAt,
+            }),
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
     case "thread.session-set":
       return Effect.gen(function* () {
         const payload = yield* decodeForEvent(
@@ -410,11 +468,20 @@ export function projectEvent(
           event.type,
           "session",
         );
+        const shouldConsumeQueuedTurn =
+          session.status === "running" &&
+          session.activeTurnId !== null &&
+          thread.latestTurn?.turnId !== session.activeTurnId;
+        const queuedTurns =
+          shouldConsumeQueuedTurn && thread.queuedTurns.length > 0
+            ? thread.queuedTurns.slice(1)
+            : thread.queuedTurns;
 
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             session,
+            queuedTurns,
             latestTurn:
               session.status === "running" && session.activeTurnId !== null
                 ? {

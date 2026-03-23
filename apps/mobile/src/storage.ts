@@ -1,11 +1,13 @@
 import Constants from "expo-constants";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type {
-  AssistantDeliveryMode,
   ProviderInteractionMode,
   ProviderReasoningEffort,
   RuntimeMode,
+  TurnDispatchMode,
 } from "@t3tools/contracts";
+
+export type { TurnDispatchMode } from "@t3tools/contracts";
 
 import {
   DEFAULT_APP_THEME_SETTINGS,
@@ -25,7 +27,7 @@ export interface ConnectionSettings {
 
 export interface StoredThreadTurnPreference {
   readonly reasoningEffort: ProviderReasoningEffort | null;
-  readonly assistantDeliveryMode: AssistantDeliveryMode;
+  readonly turnDispatchMode: TurnDispatchMode;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
 }
@@ -33,7 +35,7 @@ export interface StoredThreadTurnPreference {
 const STORAGE_KEY = "@t3tools/mobile/connection-settings";
 const THREAD_TURN_PREFERENCES_STORAGE_KEY = "@t3tools/mobile/thread-turn-preferences";
 const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultrathink"]);
-const VALID_ASSISTANT_DELIVERY_MODES = new Set(["buffered", "streaming"]);
+const VALID_TURN_DISPATCH_MODES = new Set(["live", "queue"]);
 const VALID_RUNTIME_MODES = new Set(["approval-required", "full-access"]);
 const VALID_INTERACTION_MODES = new Set(["default", "plan"]);
 
@@ -88,11 +90,17 @@ function parseStoredThreadTurnPreference(value: unknown): StoredThreadTurnPrefer
           VALID_REASONING_EFFORTS.has(value.reasoningEffort)
         ? (value.reasoningEffort as ProviderReasoningEffort)
         : null;
-  const assistantDeliveryMode =
-    typeof value.assistantDeliveryMode === "string" &&
-    VALID_ASSISTANT_DELIVERY_MODES.has(value.assistantDeliveryMode)
-      ? (value.assistantDeliveryMode as AssistantDeliveryMode)
-      : null;
+  const turnDispatchMode =
+    typeof value.turnDispatchMode === "string" &&
+    VALID_TURN_DISPATCH_MODES.has(value.turnDispatchMode)
+      ? (value.turnDispatchMode as TurnDispatchMode)
+      : typeof value.assistantDeliveryMode === "string"
+        ? value.assistantDeliveryMode === "buffered"
+          ? "queue"
+          : value.assistantDeliveryMode === "streaming"
+            ? "live"
+            : null
+        : "live";
   const runtimeMode =
     typeof value.runtimeMode === "string" && VALID_RUNTIME_MODES.has(value.runtimeMode)
       ? (value.runtimeMode as RuntimeMode)
@@ -102,13 +110,13 @@ function parseStoredThreadTurnPreference(value: unknown): StoredThreadTurnPrefer
       ? (value.interactionMode as ProviderInteractionMode)
       : "default";
 
-  if (!assistantDeliveryMode || !runtimeMode) {
+  if (!turnDispatchMode || !runtimeMode) {
     return null;
   }
 
   return {
     reasoningEffort,
-    assistantDeliveryMode,
+    turnDispatchMode,
     runtimeMode,
     interactionMode,
   };

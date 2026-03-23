@@ -33,6 +33,7 @@ type ProviderIntentEvent = Extract<
   {
     type:
       | "thread.runtime-mode-set"
+      | "thread.session-set"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
@@ -159,6 +160,7 @@ const make = Effect.gen(function* () {
 
   const threadProviderOptions = new Map<string, ProviderStartOptions>();
   const threadModelOptions = new Map<string, ProviderModelOptions>();
+  const queuedTurnDispatchInFlight = new Set<string>();
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -209,6 +211,16 @@ const make = Effect.gen(function* () {
   const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     const readModel = yield* orchestrationEngine.getReadModel();
     return readModel.threads.find((entry) => entry.id === threadId);
+  });
+
+  const getActiveProviderSession = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const sessions = yield* providerService.listSessions();
+    return sessions.find((entry) => entry.threadId === threadId);
+  });
+
+  const hasActiveProviderTurn = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const session = yield* getActiveProviderSession(threadId);
+    return session?.status === "running" || session?.activeTurnId != null;
   });
 
   const ensureSessionForThread = Effect.fnUntraced(function* (
@@ -406,7 +418,7 @@ const make = Effect.gen(function* () {
         : (yield* providerService.getCapabilities(activeSession.provider)).sessionModelSwitch;
     const modelForTurn = sessionModelSwitch === "unsupported" ? activeSession?.model : input.model;
 
-    yield* providerService.sendTurn({
+    const turn = yield* providerService.sendTurn({
       threadId: input.threadId,
       ...(normalizedInput ? { input: normalizedInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
@@ -414,6 +426,111 @@ const make = Effect.gen(function* () {
       ...(input.modelOptions !== undefined ? { modelOptions: input.modelOptions } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
     });
+    yield* setThreadSession({
+      threadId: input.threadId,
+      session: {
+        threadId: input.threadId,
+        status: "running",
+        providerName:
+          activeSession?.provider ??
+          input.provider ??
+          (modelForTurn
+            ? inferProviderForModel(modelForTurn)
+            : inferProviderForModel(thread.model)),
+        runtimeMode: thread.runtimeMode,
+        activeTurnId: turn.turnId,
+        lastError: activeSession?.lastError ?? null,
+        updatedAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+
+  const maybeStartNextQueuedTurn = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly createdAt: string;
+  }) {
+    const thread = yield* resolveThread(input.threadId);
+    if (!thread) {
+      return;
+    }
+
+    const nextQueuedTurn = thread.queuedTurns[0];
+    if (!nextQueuedTurn) {
+      return;
+    }
+
+    for (const messageId of queuedTurnDispatchInFlight) {
+      if (!thread.queuedTurns.some((entry) => entry.messageId === messageId)) {
+        queuedTurnDispatchInFlight.delete(messageId);
+      }
+    }
+
+    if (queuedTurnDispatchInFlight.has(nextQueuedTurn.messageId)) {
+      return;
+    }
+
+    if (yield* hasActiveProviderTurn(input.threadId)) {
+      return;
+    }
+
+    const sessionStatus = thread.session?.status ?? "idle";
+    if (sessionStatus !== "idle" && sessionStatus !== "ready" && sessionStatus !== "stopped") {
+      return;
+    }
+
+    const message = thread.messages.find((entry) => entry.id === nextQueuedTurn.messageId);
+    if (!message || message.role !== "user") {
+      yield* appendProviderFailureActivity({
+        threadId: input.threadId,
+        kind: "provider.turn.start.failed",
+        summary: "Provider turn start failed",
+        detail: `Queued user message '${nextQueuedTurn.messageId}' was not found for thread '${input.threadId}'.`,
+        turnId: null,
+        createdAt: input.createdAt,
+      });
+      return;
+    }
+
+    yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
+      threadId: input.threadId,
+      branch: thread.branch,
+      worktreePath: thread.worktreePath,
+      messageId: message.id,
+      messageText: message.text,
+      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+    }).pipe(Effect.forkScoped);
+
+    queuedTurnDispatchInFlight.add(nextQueuedTurn.messageId);
+    yield* sendTurnForThread({
+      threadId: input.threadId,
+      messageText: message.text,
+      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+      ...(nextQueuedTurn.provider !== undefined ? { provider: nextQueuedTurn.provider } : {}),
+      ...(nextQueuedTurn.model !== undefined ? { model: nextQueuedTurn.model } : {}),
+      ...(nextQueuedTurn.modelOptions !== undefined
+        ? { modelOptions: nextQueuedTurn.modelOptions }
+        : {}),
+      ...(nextQueuedTurn.providerOptions !== undefined
+        ? { providerOptions: nextQueuedTurn.providerOptions }
+        : {}),
+      interactionMode: nextQueuedTurn.interactionMode ?? thread.interactionMode,
+      createdAt: input.createdAt,
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          queuedTurnDispatchInFlight.delete(nextQueuedTurn.messageId);
+          yield* appendProviderFailureActivity({
+            threadId: input.threadId,
+            kind: "provider.turn.start.failed",
+            summary: "Provider turn start failed",
+            detail: Cause.pretty(cause),
+            turnId: null,
+            createdAt: input.createdAt,
+          });
+        }),
+      ),
+    );
   });
 
   const maybeGenerateAndRenameWorktreeBranchForFirstTurn = Effect.fnUntraced(function* (input: {
@@ -498,54 +615,59 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
-    if (!message || message.role !== "user") {
-      yield* appendProviderFailureActivity({
-        threadId: event.payload.threadId,
-        kind: "provider.turn.start.failed",
-        summary: "Provider turn start failed",
-        detail: `User message '${event.payload.messageId}' was not found for turn start request.`,
-        turnId: null,
-        createdAt: event.payload.createdAt,
-      });
+    const hasActiveTurn =
+      thread.latestTurn?.state === "running" ||
+      (yield* hasActiveProviderTurn(event.payload.threadId));
+    if ((event.payload.dispatchMode ?? "live") === "live" && hasActiveTurn) {
+      const interruptSucceeded = yield* providerService
+        .interruptTurn({ threadId: event.payload.threadId })
+        .pipe(
+          Effect.as(true),
+          Effect.catchCause((cause) =>
+            appendProviderFailureActivity({
+              threadId: event.payload.threadId,
+              kind: "provider.turn.interrupt.failed",
+              summary: "Provider turn interrupt failed",
+              detail: Cause.pretty(cause),
+              turnId: thread.latestTurn?.turnId ?? null,
+              createdAt: event.payload.createdAt,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+      if (interruptSucceeded) {
+        yield* setThreadSession({
+          threadId: event.payload.threadId,
+          session: {
+            threadId: event.payload.threadId,
+            status: "ready",
+            providerName: thread.session?.providerName ?? inferProviderForModel(thread.model),
+            runtimeMode: thread.runtimeMode,
+            activeTurnId: null,
+            lastError: thread.session?.lastError ?? null,
+            updatedAt: event.payload.createdAt,
+          },
+          createdAt: event.payload.createdAt,
+        });
+      }
+    }
+
+    yield* maybeStartNextQueuedTurn({
+      threadId: event.payload.threadId,
+      createdAt: event.payload.createdAt,
+    });
+  });
+
+  const processThreadSessionSet = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.session-set" }>,
+  ) {
+    if (event.payload.session.status !== "ready") {
       return;
     }
 
-    yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
+    yield* maybeStartNextQueuedTurn({
       threadId: event.payload.threadId,
-      branch: thread.branch,
-      worktreePath: thread.worktreePath,
-      messageId: message.id,
-      messageText: message.text,
-      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-    }).pipe(Effect.forkScoped);
-
-    yield* sendTurnForThread({
-      threadId: event.payload.threadId,
-      messageText: message.text,
-      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-      ...(event.payload.provider !== undefined ? { provider: event.payload.provider } : {}),
-      ...(event.payload.model !== undefined ? { model: event.payload.model } : {}),
-      ...(event.payload.modelOptions !== undefined
-        ? { modelOptions: event.payload.modelOptions }
-        : {}),
-      ...(event.payload.providerOptions !== undefined
-        ? { providerOptions: event.payload.providerOptions }
-        : {}),
-      interactionMode: event.payload.interactionMode,
-      createdAt: event.payload.createdAt,
-    }).pipe(
-      Effect.catchCause((cause) =>
-        appendProviderFailureActivity({
-          threadId: event.payload.threadId,
-          kind: "provider.turn.start.failed",
-          summary: "Provider turn start failed",
-          detail: Cause.pretty(cause),
-          turnId: null,
-          createdAt: event.payload.createdAt,
-        }),
-      ),
-    );
+      createdAt: event.payload.session.updatedAt,
+    });
   });
 
   const processTurnInterruptRequested = Effect.fnUntraced(function* (
@@ -568,7 +690,37 @@ const make = Effect.gen(function* () {
     }
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    const interruptSucceeded = yield* providerService
+      .interruptTurn({ threadId: event.payload.threadId })
+      .pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.turn.interrupt.failed",
+            summary: "Provider turn interrupt failed",
+            detail: Cause.pretty(cause),
+            turnId: event.payload.turnId ?? null,
+            createdAt: event.payload.createdAt,
+          }).pipe(Effect.as(false)),
+        ),
+      );
+    if (!interruptSucceeded) {
+      return;
+    }
+    yield* setThreadSession({
+      threadId: event.payload.threadId,
+      session: {
+        threadId: event.payload.threadId,
+        status: "ready",
+        providerName: thread.session?.providerName ?? inferProviderForModel(thread.model),
+        runtimeMode: thread.runtimeMode,
+        activeTurnId: null,
+        lastError: thread.session?.lastError ?? null,
+        updatedAt: event.payload.createdAt,
+      },
+      createdAt: event.payload.createdAt,
+    });
   });
 
   const processApprovalResponseRequested = Effect.fnUntraced(function* (
@@ -707,6 +859,9 @@ const make = Effect.gen(function* () {
           });
           return;
         }
+        case "thread.session-set":
+          yield* processThreadSessionSet(event);
+          return;
         case "thread.turn-start-requested":
           yield* processTurnStartRequested(event);
           return;
@@ -744,6 +899,7 @@ const make = Effect.gen(function* () {
     Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
       if (
         event.type !== "thread.runtime-mode-set" &&
+        event.type !== "thread.session-set" &&
         event.type !== "thread.turn-start-requested" &&
         event.type !== "thread.turn-interrupt-requested" &&
         event.type !== "thread.approval-response-requested" &&

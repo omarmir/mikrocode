@@ -55,7 +55,6 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import type {
-  AssistantDeliveryMode,
   ClaudeCodeEffort,
   CodexReasoningEffort,
   GitBranch,
@@ -83,6 +82,7 @@ import {
   saveThreadTurnPreferences,
   type ConnectionSettings,
   type StoredThreadTurnPreference,
+  type TurnDispatchMode,
 } from "./storage";
 import {
   FLEXOKI_DARK_ACCENT_OPTIONS,
@@ -554,8 +554,8 @@ function formatInteractionModeIcon(mode: ProviderInteractionMode): FeatherIconNa
   return mode === "plan" ? "file-text" : "message-square";
 }
 
-function formatAssistantDeliveryModeIcon(mode: AssistantDeliveryMode): FeatherIconName {
-  return mode === "streaming" ? "chevrons-right" : "clock";
+function formatTurnDispatchModeIcon(mode: TurnDispatchMode): FeatherIconName {
+  return mode === "live" ? "chevrons-right" : "clock";
 }
 
 function getThemeNeutralLabel(base: AppThemeNeutral) {
@@ -1382,6 +1382,13 @@ function AppShellContent() {
   const selectedProject = allProjects.find((project) => project.id === effectiveProjectId) ?? null;
   const selectedProjectThreads = selectedProject ? sortThreads(allThreads, selectedProject.id) : [];
   const messages = sortMessages(selectedThread?.messages ?? []);
+  const queuedPositionByMessageId = useMemo(() => {
+    const positions = new Map<string, number>();
+    for (const [index, queuedTurn] of (selectedThread?.queuedTurns ?? []).entries()) {
+      positions.set(queuedTurn.messageId, index + 1);
+    }
+    return positions;
+  }, [selectedThread?.queuedTurns]);
   const highlightedAssistantMessageId =
     messages[messages.length - 1]?.role === "assistant" ? messages[messages.length - 1]?.id : null;
   const pendingApprovalRequest = findPendingApprovalRequest(selectedThread);
@@ -1419,7 +1426,7 @@ function AppShellContent() {
             : defaultReasoning;
         return {
           reasoningEffort: resolvedReasoning,
-          assistantDeliveryMode: stored?.assistantDeliveryMode ?? "streaming",
+          turnDispatchMode: stored?.turnDispatchMode ?? "live",
           runtimeMode: stored?.runtimeMode ?? selectedThread.runtimeMode ?? "full-access",
           interactionMode: stored?.interactionMode ?? selectedThread.interactionMode ?? "default",
         } satisfies ThreadTurnPreference;
@@ -1429,8 +1436,7 @@ function AppShellContent() {
     selectedThreadTurnPreference?.runtimeMode ?? selectedThread?.runtimeMode ?? "full-access";
   const selectedInteractionMode =
     selectedThreadTurnPreference?.interactionMode ?? selectedThread?.interactionMode ?? "default";
-  const selectedAssistantDeliveryMode =
-    selectedThreadTurnPreference?.assistantDeliveryMode ?? "streaming";
+  const selectedTurnDispatchMode = selectedThreadTurnPreference?.turnDispatchMode ?? "live";
   const selectedThreadHasPendingServerResponse =
     selectedThread !== null && pendingServerResponseThreadIds.includes(selectedThread.id);
   const pendingUserInputRequest = findPendingUserInputRequest(selectedThread);
@@ -1471,7 +1477,8 @@ function AppShellContent() {
     selectedThread !== null &&
     isConnected &&
     busyAction === null &&
-    !sessionBusy &&
+    pendingApprovalRequest === null &&
+    pendingUserInputRequest === null &&
     (draft.trim().length > 0 || draftAttachments.length > 0);
 
   useEffect(() => {
@@ -1840,10 +1847,8 @@ function AppShellContent() {
       [selectedThread.id]: {
         reasoningEffort:
           patch.reasoningEffort ?? current[selectedThread.id]?.reasoningEffort ?? null,
-        assistantDeliveryMode:
-          patch.assistantDeliveryMode ??
-          current[selectedThread.id]?.assistantDeliveryMode ??
-          "streaming",
+        turnDispatchMode:
+          patch.turnDispatchMode ?? current[selectedThread.id]?.turnDispatchMode ?? "live",
         runtimeMode:
           patch.runtimeMode ??
           current[selectedThread.id]?.runtimeMode ??
@@ -2154,16 +2159,14 @@ function AppShellContent() {
     closeConversationPicker();
   };
 
-  const handleSelectAssistantDeliveryMode = (mode: AssistantDeliveryMode) => {
-    updateThreadTurnPreference({ assistantDeliveryMode: mode });
-    showToast(mode === "streaming" ? "Delivery: Live" : "Delivery: Queue");
+  const handleSelectTurnDispatchMode = (mode: TurnDispatchMode) => {
+    updateThreadTurnPreference({ turnDispatchMode: mode });
+    showToast(mode === "live" ? "Delivery: Live" : "Delivery: Queue");
     closeConversationPicker();
   };
 
-  const handleToggleAssistantDeliveryMode = () => {
-    handleSelectAssistantDeliveryMode(
-      selectedAssistantDeliveryMode === "streaming" ? "buffered" : "streaming",
-    );
+  const handleToggleTurnDispatchMode = () => {
+    handleSelectTurnDispatchMode(selectedTurnDispatchMode === "live" ? "queue" : "live");
   };
 
   const handleSelectConversationModel = async (model: string) => {
@@ -2509,6 +2512,9 @@ function AppShellContent() {
       return;
     }
 
+    const willQueueTurn = selectedTurnDispatchMode === "queue" && sessionBusy;
+    const willInterruptTurn = selectedTurnDispatchMode === "live" && sessionBusy;
+
     await sendTurn({
       threadId: selectedThread.id,
       text: trimmed,
@@ -2522,7 +2528,8 @@ function AppShellContent() {
       runtimeMode: selectedRuntimeMode,
       interactionMode: selectedInteractionMode,
       model: selectedThread.model,
-      assistantDeliveryMode: selectedAssistantDeliveryMode,
+      turnDispatchMode: selectedTurnDispatchMode,
+      assistantDeliveryMode: "streaming",
       modelOptions:
         selectedConversationProvider === "codex" && selectedThreadTurnPreference?.reasoningEffort
           ? {
@@ -2543,6 +2550,11 @@ function AppShellContent() {
 
     setThreadDrafts((current) => ({ ...current, [selectedThread.id]: "" }));
     setThreadDraftAttachments((current) => ({ ...current, [selectedThread.id]: [] }));
+    if (willQueueTurn) {
+      showToast("Queued for next turn");
+    } else if (willInterruptTurn) {
+      showToast("Interrupting current turn");
+    }
   };
 
   const resolveAttachmentImageUrl = (attachmentId: string) => {
@@ -2995,26 +3007,26 @@ function AppShellContent() {
           </Pressable>
           <Pressable
             accessibilityLabel={
-              selectedAssistantDeliveryMode === "streaming"
-                ? "Switch reply delivery to queue"
-                : "Switch reply delivery to live"
+              selectedTurnDispatchMode === "live"
+                ? "Switch message delivery to queue"
+                : "Switch message delivery to live"
             }
             disabled={!selectedThread || busyAction !== null}
             onPress={() => {
-              handleToggleAssistantDeliveryMode();
+              handleToggleTurnDispatchMode();
             }}
             style={[
               styles.composerControlButton,
               styles.composerControlButtonIcon,
-              selectedAssistantDeliveryMode === "streaming" && styles.composerControlButtonSelected,
+              selectedTurnDispatchMode === "queue" && styles.composerControlButtonSelected,
               (!selectedThread || busyAction !== null) && styles.buttonDisabled,
             ]}
           >
             <Feather
               accessibilityElementsHidden
-              color={selectedAssistantDeliveryMode === "streaming" ? theme.accent : theme.text}
+              color={selectedTurnDispatchMode === "queue" ? theme.accent : theme.text}
               importantForAccessibility="no-hide-descendants"
-              name={formatAssistantDeliveryModeIcon(selectedAssistantDeliveryMode)}
+              name={formatTurnDispatchModeIcon(selectedTurnDispatchMode)}
               size={14}
             />
           </Pressable>
@@ -3063,6 +3075,8 @@ function AppShellContent() {
       >
         {messages.length > 0 ? (
           messages.map((message) => {
+            const queuedPosition =
+              message.role === "user" ? (queuedPositionByMessageId.get(message.id) ?? null) : null;
             const hasMessageText = message.text.length > 0;
             const messageAttachmentPreviews = (message.attachments ?? [])
               .filter((attachment) => attachment.type === "image")
@@ -3102,6 +3116,13 @@ function AppShellContent() {
                   ]}
                 >
                   <View style={styles.messageBody}>
+                    {queuedPosition !== null ? (
+                      <View style={styles.messageQueuedBadge}>
+                        <Text style={styles.messageQueuedBadgeText}>
+                          {queuedPosition === 1 ? "Queued next" : `Queued ${queuedPosition}`}
+                        </Text>
+                      </View>
+                    ) : null}
                     {hasMessageText || message.streaming ? (
                       hasMessageText ? (
                         message.role === "assistant" ? (
@@ -3440,7 +3461,13 @@ function AppShellContent() {
           <View style={styles.composerRunAction}>
             <ActionButton
               disabled={!canSend}
-              label={selectedAssistantDeliveryMode === "streaming" ? "Send" : "Queue"}
+              label={
+                selectedTurnDispatchMode === "queue" && sessionBusy
+                  ? "Queue"
+                  : selectedTurnDispatchMode === "live" && sessionBusy
+                    ? "Send now"
+                    : "Send"
+              }
               onPress={() => {
                 void handleSend();
               }}
@@ -5168,6 +5195,22 @@ function createStyles(theme: AppTheme) {
     messageBody: {
       gap: 6,
       width: "100%",
+    },
+    messageQueuedBadge: {
+      alignSelf: "flex-start",
+      backgroundColor: TERMINAL_ACCENT_SOFT,
+      borderColor: TERMINAL_ACCENT,
+      borderWidth: 1,
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+    },
+    messageQueuedBadgeText: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.3,
+      textTransform: "uppercase",
     },
     messageText: {
       fontFamily: TERMINAL_FONT_FAMILY,

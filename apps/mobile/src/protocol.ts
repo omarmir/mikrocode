@@ -14,6 +14,7 @@ import type {
   RuntimeMode,
   ServerConfig,
   ServerConversationCapabilities,
+  TurnDispatchMode,
   UploadChatAttachment,
   WsWelcomePayload,
 } from "@t3tools/contracts";
@@ -79,6 +80,7 @@ export interface SendTurnInput {
   readonly model: string;
   readonly modelOptions?: ProviderModelOptions;
   readonly reasoningEffort?: ProviderReasoningEffort | null;
+  readonly turnDispatchMode: TurnDispatchMode;
   readonly assistantDeliveryMode: AssistantDeliveryMode;
 }
 

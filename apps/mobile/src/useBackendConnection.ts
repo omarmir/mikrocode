@@ -674,6 +674,7 @@ export function useBackendConnection() {
             },
             model: input.model,
             ...(input.modelOptions ? { modelOptions: input.modelOptions } : {}),
+            dispatchMode: input.turnDispatchMode,
             assistantDeliveryMode: input.assistantDeliveryMode,
             runtimeMode: input.runtimeMode,
             interactionMode: input.interactionMode,
