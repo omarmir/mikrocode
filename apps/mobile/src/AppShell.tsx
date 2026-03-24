@@ -19,6 +19,7 @@ import {
   cloneElement,
   createContext,
   isValidElement,
+  memo,
   type ReactNode,
   useCallback,
   useContext,
@@ -31,10 +32,12 @@ import {
   AppState,
   Animated,
   Easing,
+  FlatList,
   Image,
   Keyboard,
   KeyboardAvoidingView,
   type LayoutChangeEvent,
+  type ListRenderItemInfo,
   PanResponder,
   Platform,
   Pressable,
@@ -107,6 +110,7 @@ import {
   parseUnifiedDiff,
   type ParsedUnifiedDiffFile,
   type ThreadDiffEntry,
+  type ThreadTimelineEntry,
 } from "./threadDiffs";
 import { useBackendConnection } from "./useBackendConnection";
 
@@ -843,6 +847,7 @@ type HydratedTurnDiffState = {
 };
 
 const DIFF_FILE_LINE_LIMIT = 200;
+const EMPTY_EXPANDED_DIFF_FILE_IDS: Readonly<Record<string, true>> = Object.freeze({});
 type MessageScrollMetrics = {
   contentHeight: number;
   viewportHeight: number;
@@ -1159,7 +1164,7 @@ function activityBody(activity: OrchestrationThreadActivity): {
   };
 }
 
-function TimelineCodeBlock({
+const TimelineCodeBlock = memo(function TimelineCodeBlock({
   language,
   value,
 }: {
@@ -1183,21 +1188,24 @@ function TimelineCodeBlock({
       </ScrollView>
     </View>
   );
-}
+});
 
-function ThreadDiffCard({
+const ThreadDiffCard = memo(function ThreadDiffCard({
   entry,
   expanded,
+  expandedFileIds,
   hydratedDiff,
+  onExpandFile,
   onToggle,
 }: {
   readonly entry: ThreadDiffEntry;
   readonly expanded: boolean;
+  readonly expandedFileIds: Readonly<Record<string, true>>;
   readonly hydratedDiff: HydratedTurnDiffState | null;
+  readonly onExpandFile: (fileId: string) => void;
   readonly onToggle: () => void;
 }) {
   const { styles, theme } = useAppThemeContext();
-  const [expandedFileIds, setExpandedFileIds] = useState<Record<string, true>>({});
   const unifiedDiff = hydratedDiff?.result?.diff ?? entry.previewUnifiedDiff ?? "";
   const parsedFiles = useMemo<ReadonlyArray<ParsedUnifiedDiffFile>>(
     () => parseUnifiedDiff(unifiedDiff),
@@ -1314,10 +1322,7 @@ function ThreadDiffCard({
                   {file.lines.length > visibleLines.length ? (
                     <Pressable
                       onPress={() => {
-                        setExpandedFileIds((current) => ({
-                          ...current,
-                          [file.id]: true,
-                        }));
+                        onExpandFile(file.id);
                       }}
                       style={styles.diffFileMoreButton}
                     >
@@ -1342,9 +1347,9 @@ function ThreadDiffCard({
       ) : null}
     </View>
   );
-}
+});
 
-function TimelineActivityGroup({
+const TimelineActivityGroup = memo(function TimelineActivityGroup({
   activities,
   expanded,
   onToggle,
@@ -1411,7 +1416,7 @@ function TimelineActivityGroup({
       ) : null}
     </View>
   );
-}
+});
 
 function findPendingApprovalRequest(
   thread: OrchestrationThread | null,
@@ -1820,7 +1825,7 @@ function SwipeDismissRow({
   );
 }
 
-function MarkdownMessage({ value }: { readonly value: string }) {
+const MarkdownMessage = memo(function MarkdownMessage({ value }: { readonly value: string }) {
   const { styles, theme } = useAppThemeContext();
   const markdownStyles = useMemo<MarkedStyles>(
     () => ({
@@ -1910,9 +1915,13 @@ function MarkdownMessage({ value }: { readonly value: string }) {
   );
 
   return <View style={styles.messageMarkdownRoot}>{normalizedElements}</View>;
-}
+});
 
-function ProposedPlanCard({ proposedPlan }: { readonly proposedPlan: OrchestrationProposedPlan }) {
+const ProposedPlanCard = memo(function ProposedPlanCard({
+  proposedPlan,
+}: {
+  readonly proposedPlan: OrchestrationProposedPlan;
+}) {
   const { styles, theme } = useAppThemeContext();
   return (
     <View style={styles.proposedPlanCard}>
@@ -1926,7 +1935,126 @@ function ProposedPlanCard({ proposedPlan }: { readonly proposedPlan: Orchestrati
       <MarkdownMessage value={proposedPlan.planMarkdown} />
     </View>
   );
-}
+});
+
+const ConversationMessageCard = memo(function ConversationMessageCard({
+  highlighted,
+  isMetaRevealed,
+  message,
+  messageMetaOpacity,
+  onRevealMeta,
+  queuedPosition,
+  resolveAttachmentImageUrl,
+}: {
+  readonly highlighted: boolean;
+  readonly isMetaRevealed: boolean;
+  readonly message: OrchestrationMessage;
+  readonly messageMetaOpacity: Animated.Value;
+  readonly onRevealMeta: (messageId: string) => void;
+  readonly queuedPosition: number | null;
+  readonly resolveAttachmentImageUrl: (attachmentId: string) => string | null;
+}) {
+  const { styles } = useAppThemeContext();
+  const hasMessageText = message.text.length > 0;
+  const messageAttachmentPreviews = useMemo(
+    () =>
+      (message.attachments ?? [])
+        .filter((attachment) => attachment.type === "image")
+        .map((attachment) => ({
+          id: attachment.id,
+          name: attachment.name,
+          uri: resolveAttachmentImageUrl(attachment.id),
+        }))
+        .filter(
+          (
+            attachment,
+          ): attachment is {
+            readonly id: string;
+            readonly name: string;
+            readonly uri: string;
+          } => attachment.uri !== null,
+        ),
+    [message.attachments, resolveAttachmentImageUrl],
+  );
+
+  return (
+    <Pressable
+      onPress={() => {
+        onRevealMeta(message.id);
+      }}
+      style={[
+        styles.messageWrap,
+        message.role === "user" ? styles.messageWrapUser : styles.messageWrapAssistant,
+      ]}
+    >
+      <View
+        style={[
+          styles.messageRow,
+          message.role === "user" ? styles.messageRowUser : styles.messageRowAssistant,
+          highlighted && styles.messageRowAssistantLatest,
+        ]}
+      >
+        <View style={styles.messageBody}>
+          {queuedPosition !== null ? (
+            <View style={styles.messageQueuedBadge}>
+              <Text style={styles.messageQueuedBadgeText}>
+                {queuedPosition === 1 ? "Queued next" : `Queued ${queuedPosition}`}
+              </Text>
+            </View>
+          ) : null}
+          {hasMessageText || message.streaming ? (
+            hasMessageText ? (
+              message.role === "assistant" ? (
+                <MarkdownMessage value={message.text} />
+              ) : (
+                <Text
+                  style={[
+                    styles.messageText,
+                    message.role === "user" ? styles.messageTextUser : styles.messageTextAssistant,
+                  ]}
+                >
+                  {message.text}
+                </Text>
+              )
+            ) : (
+              <Text style={[styles.messageText, styles.messageTextAssistant]}>Streaming...</Text>
+            )
+          ) : null}
+
+          {messageAttachmentPreviews.length > 0 ? (
+            <View style={styles.messageAttachmentRow}>
+              {messageAttachmentPreviews.map((attachment) => (
+                <View key={attachment.id} style={styles.messageAttachmentTile}>
+                  <Image
+                    resizeMode="cover"
+                    source={{ uri: attachment.uri }}
+                    style={styles.messageAttachmentImage}
+                  />
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      </View>
+      {isMetaRevealed ? (
+        <Animated.View
+          style={[
+            styles.messageMetaReveal,
+            { opacity: messageMetaOpacity },
+            message.role === "user"
+              ? styles.messageMetaRevealUser
+              : styles.messageMetaRevealAssistant,
+          ]}
+        >
+          <Text style={styles.messageMetaRevealText}>
+            {formatTimestamp(message.updatedAt)}
+            {message.streaming ? " / streaming" : ""}
+          </Text>
+        </Animated.View>
+      ) : null}
+    </Pressable>
+  );
+});
 
 function isThreadWaitingForResponse(
   thread: OrchestrationThread | null,
@@ -2043,6 +2171,9 @@ function AppShellContent() {
     {},
   );
   const [expandedDiffIds, setExpandedDiffIds] = useState<Record<string, true>>({});
+  const [expandedDiffFileIds, setExpandedDiffFileIds] = useState<
+    Record<string, Record<string, true>>
+  >({});
   const [hydratedTurnDiffs, setHydratedTurnDiffs] = useState<Record<string, HydratedTurnDiffState>>(
     {},
   );
@@ -2081,7 +2212,7 @@ function AppShellContent() {
   const messageMetaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deviceNotificationChannelReadyRef = useRef(false);
-  const messagesScrollRef = useRef<ScrollView | null>(null);
+  const messagesScrollRef = useRef<FlatList<ThreadTimelineEntry> | null>(null);
   const processingServerNotificationRef = useRef(false);
   const directoryLoadSequenceRef = useRef(0);
   const waitingIndicatorMotion = useRef(new Animated.Value(0)).current;
@@ -2092,20 +2223,40 @@ function AppShellContent() {
   });
   const forceScrollToBottomRef = useRef(false);
 
-  const allProjects = sortProjects(snapshot?.projects ?? []);
-  const visibleProjectIds = new Set(allProjects.map((project) => project.id));
-  const allThreads = sortThreads(snapshot?.threads ?? []).filter((thread) =>
-    visibleProjectIds.has(thread.projectId),
+  const allProjects = useMemo(() => sortProjects(snapshot?.projects ?? []), [snapshot?.projects]);
+  const visibleProjectIds = useMemo(
+    () => new Set(allProjects.map((project) => project.id)),
+    [allProjects],
   );
-  const recentThreads = allThreads
-    .filter((thread) => !hiddenRecentThreadIds.includes(thread.id))
-    .slice(0, 8);
-  const selectedThread = allThreads.find((thread) => thread.id === selectedThreadId) ?? null;
+  const allThreads = useMemo(
+    () =>
+      sortThreads(snapshot?.threads ?? []).filter((thread) =>
+        visibleProjectIds.has(thread.projectId),
+      ),
+    [snapshot?.threads, visibleProjectIds],
+  );
+  const recentThreads = useMemo(
+    () => allThreads.filter((thread) => !hiddenRecentThreadIds.includes(thread.id)).slice(0, 8),
+    [allThreads, hiddenRecentThreadIds],
+  );
+  const selectedThread = useMemo(
+    () => allThreads.find((thread) => thread.id === selectedThreadId) ?? null,
+    [allThreads, selectedThreadId],
+  );
   const effectiveProjectId =
     selectedThread?.projectId ?? selectedProjectId ?? allProjects[0]?.id ?? null;
-  const selectedProject = allProjects.find((project) => project.id === effectiveProjectId) ?? null;
-  const selectedProjectThreads = selectedProject ? sortThreads(allThreads, selectedProject.id) : [];
-  const messages = sortMessages(selectedThread?.messages ?? []);
+  const selectedProject = useMemo(
+    () => allProjects.find((project) => project.id === effectiveProjectId) ?? null,
+    [allProjects, effectiveProjectId],
+  );
+  const selectedProjectThreads = useMemo(
+    () => (selectedProject ? sortThreads(allThreads, selectedProject.id) : []),
+    [allThreads, selectedProject],
+  );
+  const messages = useMemo(
+    () => sortMessages(selectedThread?.messages ?? []),
+    [selectedThread?.messages],
+  );
   const threadDiffEntries = useMemo(() => buildThreadDiffEntries(selectedThread), [selectedThread]);
   const timelineEntries = useMemo(
     () =>
@@ -2124,9 +2275,14 @@ function AppShellContent() {
     }
     return positions;
   }, [selectedThread?.queuedTurns]);
-  const highlightedAssistantMessageId =
-    messages[messages.length - 1]?.role === "assistant" ? messages[messages.length - 1]?.id : null;
-  const pendingApprovalRequest = findPendingApprovalRequest(selectedThread);
+  const highlightedAssistantMessageId = useMemo(() => {
+    const latestMessage = messages[messages.length - 1];
+    return latestMessage?.role === "assistant" ? latestMessage.id : null;
+  }, [messages]);
+  const pendingApprovalRequest = useMemo(
+    () => findPendingApprovalRequest(selectedThread),
+    [selectedThread],
+  );
   const selectedThreadDisplayTitle = getThreadDisplayTitle(selectedThread);
   const draft = selectedThread ? (threadDrafts[selectedThread.id] ?? "") : "";
   const draftAttachments = selectedThread ? (threadDraftAttachments[selectedThread.id] ?? []) : [];
@@ -2179,8 +2335,11 @@ function AppShellContent() {
   const selectedTurnDispatchMode = selectedThreadTurnPreference?.turnDispatchMode ?? "live";
   const selectedThreadHasPendingServerResponse =
     selectedThread !== null && pendingServerResponseThreadIds.includes(selectedThread.id);
-  const pendingUserInputRequest = findPendingUserInputRequest(selectedThread);
-  const activeTaskType = findLatestActiveTaskType(selectedThread);
+  const pendingUserInputRequest = useMemo(
+    () => findPendingUserInputRequest(selectedThread),
+    [selectedThread],
+  );
+  const activeTaskType = useMemo(() => findLatestActiveTaskType(selectedThread), [selectedThread]);
   const sessionStatus = selectedThread?.session?.status ?? "idle";
   const sessionBusy = isThreadWaitingForResponse(
     selectedThread,
@@ -2375,6 +2534,7 @@ function AppShellContent() {
     }
     setExpandedActivityGroupIds({});
     setExpandedDiffIds({});
+    setExpandedDiffFileIds({});
     setRevealedMessageId(null);
     messageMetaOpacity.setValue(0);
   }, [messageMetaOpacity, selectedThreadConversationId]);
@@ -3066,7 +3226,7 @@ function AppShellContent() {
     }
   };
 
-  const handlePullToRefresh = async () => {
+  const handlePullToRefresh = useCallback(async () => {
     if (isPullRefreshing) {
       return;
     }
@@ -3077,7 +3237,7 @@ function AppShellContent() {
     } finally {
       setIsPullRefreshing(false);
     }
-  };
+  }, [isPullRefreshing, refreshSnapshot]);
 
   const handleSelectProject = (projectId: string) => {
     setSelectedProjectId(projectId);
@@ -3130,32 +3290,35 @@ function AppShellContent() {
     await deleteProject(projectId);
   };
 
-  const handleRevealMessageMeta = (messageId: string) => {
-    if (messageMetaTimerRef.current) {
-      clearTimeout(messageMetaTimerRef.current);
-      messageMetaTimerRef.current = null;
-    }
+  const handleRevealMessageMeta = useCallback(
+    (messageId: string) => {
+      if (messageMetaTimerRef.current) {
+        clearTimeout(messageMetaTimerRef.current);
+        messageMetaTimerRef.current = null;
+      }
 
-    messageMetaOpacity.stopAnimation();
-    setRevealedMessageId(messageId);
-    messageMetaOpacity.setValue(1);
+      messageMetaOpacity.stopAnimation();
+      setRevealedMessageId(messageId);
+      messageMetaOpacity.setValue(1);
 
-    messageMetaTimerRef.current = setTimeout(() => {
-      Animated.timing(messageMetaOpacity, {
-        toValue: 0,
-        duration: 1800,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (!finished) {
-          return;
-        }
-        setRevealedMessageId((current) => (current === messageId ? null : current));
-      });
-    }, 1200);
-  };
+      messageMetaTimerRef.current = setTimeout(() => {
+        Animated.timing(messageMetaOpacity, {
+          toValue: 0,
+          duration: 1800,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }).start(({ finished }) => {
+          if (!finished) {
+            return;
+          }
+          setRevealedMessageId((current) => (current === messageId ? null : current));
+        });
+      }, 1200);
+    },
+    [messageMetaOpacity],
+  );
 
-  const toggleActivityGroup = (groupId: string) => {
+  const toggleActivityGroup = useCallback((groupId: string) => {
     setExpandedActivityGroupIds((current) => {
       if (groupId in current) {
         const next = { ...current };
@@ -3168,27 +3331,49 @@ function AppShellContent() {
         [groupId]: true,
       };
     });
-  };
+  }, []);
 
-  const toggleDiffEntry = (entry: ThreadDiffEntry) => {
-    const nextExpanded = !(entry.id in expandedDiffIds);
-    setExpandedDiffIds((current) => {
-      if (entry.id in current) {
-        const next = { ...current };
-        delete next[entry.id];
-        return next;
+  const toggleDiffEntry = useCallback(
+    (entry: ThreadDiffEntry) => {
+      let nextExpanded = false;
+      setExpandedDiffIds((current) => {
+        nextExpanded = !(entry.id in current);
+        if (entry.id in current) {
+          const next = { ...current };
+          delete next[entry.id];
+          return next;
+        }
+
+        return {
+          ...current,
+          [entry.id]: true,
+        };
+      });
+
+      if (nextExpanded) {
+        void ensureHydratedTurnDiff(entry);
       }
+    },
+    [ensureHydratedTurnDiff],
+  );
+
+  const expandDiffFile = useCallback((entryId: string, fileId: string) => {
+    setExpandedDiffFileIds((current) => {
+      if (current[entryId]?.[fileId]) {
+        return current;
+      }
+
+      const currentEntry = current[entryId];
 
       return {
         ...current,
-        [entry.id]: true,
+        [entryId]: {
+          ...(currentEntry ? currentEntry : {}),
+          [fileId]: true,
+        },
       };
     });
-
-    if (nextExpanded) {
-      void ensureHydratedTurnDiff(entry);
-    }
-  };
+  }, []);
 
   const showToast = (message: string) => {
     if (toastTimerRef.current) {
@@ -3684,63 +3869,94 @@ function AppShellContent() {
       return;
     }
 
+    const threadId = selectedThread.id;
+    const attachmentsToSend = draftAttachments.map((attachment) => ({
+      type: attachment.type,
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      dataUrl: attachment.dataUrl,
+    }));
     const willQueueTurn = selectedTurnDispatchMode === "queue" && sessionBusy;
     const willInterruptTurn = selectedTurnDispatchMode === "live" && sessionBusy;
+    const draftToRestore = draft;
+    const attachmentsToRestore = draftAttachments;
 
-    await sendTurn({
-      threadId: selectedThread.id,
-      text: trimmed,
-      attachments: draftAttachments.map((attachment) => ({
-        type: attachment.type,
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        sizeBytes: attachment.sizeBytes,
-        dataUrl: attachment.dataUrl,
-      })),
-      runtimeMode: selectedRuntimeMode,
-      interactionMode: selectedInteractionMode,
-      model: selectedThread.model,
-      turnDispatchMode: selectedTurnDispatchMode,
-      assistantDeliveryMode: "streaming",
-      modelOptions:
-        selectedConversationProvider === "codex" && selectedThreadTurnPreference?.reasoningEffort
-          ? {
-              codex: {
-                reasoningEffort:
-                  selectedThreadTurnPreference.reasoningEffort as CodexReasoningEffort,
-              },
-            }
-          : selectedConversationProvider === "claudeAgent" &&
-              selectedThreadTurnPreference?.reasoningEffort
+    setThreadDrafts((current) => ({ ...current, [threadId]: "" }));
+    setThreadDraftAttachments((current) => ({ ...current, [threadId]: [] }));
+    setComposerInputHeight(COMPOSER_INPUT_MIN_HEIGHT);
+
+    try {
+      await sendTurn({
+        threadId,
+        text: trimmed,
+        attachments: attachmentsToSend,
+        runtimeMode: selectedRuntimeMode,
+        interactionMode: selectedInteractionMode,
+        model: selectedThread.model,
+        turnDispatchMode: selectedTurnDispatchMode,
+        assistantDeliveryMode: "streaming",
+        modelOptions:
+          selectedConversationProvider === "codex" && selectedThreadTurnPreference?.reasoningEffort
             ? {
-                claudeAgent: {
-                  effort: selectedThreadTurnPreference.reasoningEffort as ClaudeCodeEffort,
+                codex: {
+                  reasoningEffort:
+                    selectedThreadTurnPreference.reasoningEffort as CodexReasoningEffort,
                 },
               }
-            : undefined,
-    });
+            : selectedConversationProvider === "claudeAgent" &&
+                selectedThreadTurnPreference?.reasoningEffort
+              ? {
+                  claudeAgent: {
+                    effort: selectedThreadTurnPreference.reasoningEffort as ClaudeCodeEffort,
+                  },
+                }
+              : undefined,
+      });
+      if (willQueueTurn) {
+        showToast("Queued for next turn");
+      } else if (willInterruptTurn) {
+        showToast("Interrupting current turn");
+      }
+    } catch (error) {
+      setThreadDrafts((current) => {
+        if ((current[threadId] ?? "").length > 0) {
+          return current;
+        }
 
-    setThreadDrafts((current) => ({ ...current, [selectedThread.id]: "" }));
-    setThreadDraftAttachments((current) => ({ ...current, [selectedThread.id]: [] }));
-    setComposerInputHeight(COMPOSER_INPUT_MIN_HEIGHT);
-    if (willQueueTurn) {
-      showToast("Queued for next turn");
-    } else if (willInterruptTurn) {
-      showToast("Interrupting current turn");
+        return {
+          ...current,
+          [threadId]: draftToRestore,
+        };
+      });
+      setThreadDraftAttachments((current) => {
+        if ((current[threadId] ?? []).length > 0) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [threadId]: attachmentsToRestore,
+        };
+      });
+      throw error;
     }
   };
 
-  const resolveAttachmentImageUrl = (attachmentId: string) => {
-    try {
-      return buildAttachmentUrl(
-        connectionSettings.serverUrl,
-        connectionSettings.authToken,
-        attachmentId,
-      );
-    } catch {
-      return null;
-    }
-  };
+  const resolveAttachmentImageUrl = useCallback(
+    (attachmentId: string) => {
+      try {
+        return buildAttachmentUrl(
+          connectionSettings.serverUrl,
+          connectionSettings.authToken,
+          attachmentId,
+        );
+      } catch {
+        return null;
+      }
+    },
+    [connectionSettings.authToken, connectionSettings.serverUrl],
+  );
 
   const handleRespondToPendingApproval = async (decision: ProviderApprovalDecision) => {
     if (!selectedThread || !pendingApprovalRequest) {
@@ -3788,6 +4004,124 @@ function AppShellContent() {
   const canPrepareGitMainlineMerge =
     canRunGitOperations && gitCurrentBranch !== null && !gitWorkingTreeDirty;
   const gitManualCommitMessage = gitCommitMessageDraft.trim();
+  const handleRefreshConversation = useCallback(() => {
+    void handlePullToRefresh();
+  }, [handlePullToRefresh]);
+  const conversationKeyExtractor = useCallback((entry: ThreadTimelineEntry) => entry.id, []);
+  const conversationEmptyState = useMemo(
+    () => (
+      <View style={styles.emptyConversation}>
+        <Text style={styles.sectionTitle}>No output yet</Text>
+        <Text style={styles.helperText}>Send the first instruction to open the stream.</Text>
+      </View>
+    ),
+    [styles],
+  );
+  const conversationFooter = useMemo(() => {
+    if (!showWaitingIndicator) {
+      return null;
+    }
+
+    return (
+      <Animated.View
+        style={[
+          styles.waitingIndicator,
+          {
+            opacity: waitingIndicatorMotion.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0.55, 1],
+            }),
+            transform: [
+              {
+                translateY: waitingIndicatorMotion.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, -4],
+                }),
+              },
+            ],
+          },
+        ]}
+      >
+        <Text style={styles.waitingIndicatorText}>{waitingIndicatorLabel}</Text>
+      </Animated.View>
+    );
+  }, [showWaitingIndicator, styles, waitingIndicatorLabel, waitingIndicatorMotion]);
+  const renderConversationItem = useCallback(
+    ({ item }: ListRenderItemInfo<ThreadTimelineEntry>) => {
+      if (item.kind === "activityGroup") {
+        return (
+          <TimelineActivityGroup
+            activities={item.activities}
+            expanded={item.id in expandedActivityGroupIds}
+            onToggle={() => {
+              toggleActivityGroup(item.id);
+            }}
+          />
+        );
+      }
+
+      if (item.kind === "diff") {
+        const hydratedDiff =
+          selectedThreadConversationId === null
+            ? null
+            : (hydratedTurnDiffs[threadDiffCacheKey(selectedThreadConversationId, item.turnId)] ??
+              null);
+        return (
+          <ThreadDiffCard
+            entry={item}
+            expanded={item.id in expandedDiffIds}
+            expandedFileIds={expandedDiffFileIds[item.id] ?? EMPTY_EXPANDED_DIFF_FILE_IDS}
+            hydratedDiff={hydratedDiff}
+            onExpandFile={(fileId) => {
+              expandDiffFile(item.id, fileId);
+            }}
+            onToggle={() => {
+              toggleDiffEntry(item);
+            }}
+          />
+        );
+      }
+
+      if (item.kind === "proposedPlan") {
+        return <ProposedPlanCard proposedPlan={item.proposedPlan} />;
+      }
+
+      const queuedPosition =
+        item.message.role === "user"
+          ? (queuedPositionByMessageId.get(item.message.id) ?? null)
+          : null;
+
+      return (
+        <ConversationMessageCard
+          highlighted={
+            item.message.role === "assistant" && item.message.id === highlightedAssistantMessageId
+          }
+          isMetaRevealed={revealedMessageId === item.message.id}
+          message={item.message}
+          messageMetaOpacity={messageMetaOpacity}
+          onRevealMeta={handleRevealMessageMeta}
+          queuedPosition={queuedPosition}
+          resolveAttachmentImageUrl={resolveAttachmentImageUrl}
+        />
+      );
+    },
+    [
+      expandedActivityGroupIds,
+      expandedDiffIds,
+      expandedDiffFileIds,
+      expandDiffFile,
+      handleRevealMessageMeta,
+      highlightedAssistantMessageId,
+      hydratedTurnDiffs,
+      messageMetaOpacity,
+      queuedPositionByMessageId,
+      resolveAttachmentImageUrl,
+      revealedMessageId,
+      selectedThreadConversationId,
+      toggleActivityGroup,
+      toggleDiffEntry,
+    ],
+  );
 
   const renderSidebar = () => (
     <View style={styles.sidebarRoot}>
@@ -4246,201 +4580,29 @@ function AppShellContent() {
         </View>
       </View>
 
-      <ScrollView
+      <FlatList
         ref={messagesScrollRef}
         contentContainerStyle={styles.messagesScrollContent}
+        data={timelineEntries}
+        initialNumToRender={12}
         keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         keyboardShouldPersistTaps="handled"
+        keyExtractor={conversationKeyExtractor}
+        ListEmptyComponent={conversationEmptyState}
+        ListFooterComponent={conversationFooter}
+        maxToRenderPerBatch={10}
         onContentSizeChange={handleConversationContentSizeChange}
         onLayout={handleConversationLayout}
+        onRefresh={handleRefreshConversation}
         onScroll={handleConversationScroll}
+        removeClippedSubviews={Platform.OS === "android"}
+        renderItem={renderConversationItem}
+        refreshing={isPullRefreshing}
         scrollEventThrottle={16}
-        refreshControl={
-          <RefreshControl
-            onRefresh={() => {
-              void handlePullToRefresh();
-            }}
-            refreshing={isPullRefreshing}
-            tintColor={theme.accent}
-          />
-        }
         style={styles.messagesScroll}
-      >
-        {timelineEntries.length > 0 ? (
-          timelineEntries.map((entry) => {
-            if (entry.kind === "activityGroup") {
-              return (
-                <TimelineActivityGroup
-                  key={entry.id}
-                  activities={entry.activities}
-                  expanded={entry.id in expandedActivityGroupIds}
-                  onToggle={() => {
-                    toggleActivityGroup(entry.id);
-                  }}
-                />
-              );
-            }
-
-            if (entry.kind === "diff") {
-              const hydratedDiff =
-                selectedThread === null
-                  ? null
-                  : (hydratedTurnDiffs[threadDiffCacheKey(selectedThread.id, entry.turnId)] ??
-                    null);
-              return (
-                <ThreadDiffCard
-                  key={entry.id}
-                  entry={entry}
-                  expanded={entry.id in expandedDiffIds}
-                  hydratedDiff={hydratedDiff}
-                  onToggle={() => {
-                    toggleDiffEntry(entry);
-                  }}
-                />
-              );
-            }
-
-            if (entry.kind === "proposedPlan") {
-              return <ProposedPlanCard key={entry.id} proposedPlan={entry.proposedPlan} />;
-            }
-
-            const { message } = entry;
-            const queuedPosition =
-              message.role === "user" ? (queuedPositionByMessageId.get(message.id) ?? null) : null;
-            const hasMessageText = message.text.length > 0;
-            const messageAttachmentPreviews = (message.attachments ?? [])
-              .filter((attachment) => attachment.type === "image")
-              .map((attachment) => ({
-                id: attachment.id,
-                name: attachment.name,
-                uri: resolveAttachmentImageUrl(attachment.id),
-              }))
-              .filter(
-                (
-                  attachment,
-                ): attachment is {
-                  readonly id: string;
-                  readonly name: string;
-                  readonly uri: string;
-                } => attachment.uri !== null,
-              );
-
-            return (
-              <Pressable
-                key={message.id}
-                onPress={() => {
-                  handleRevealMessageMeta(message.id);
-                }}
-                style={[
-                  styles.messageWrap,
-                  message.role === "user" ? styles.messageWrapUser : styles.messageWrapAssistant,
-                ]}
-              >
-                <View
-                  style={[
-                    styles.messageRow,
-                    message.role === "user" ? styles.messageRowUser : styles.messageRowAssistant,
-                    message.role === "assistant" &&
-                      message.id === highlightedAssistantMessageId &&
-                      styles.messageRowAssistantLatest,
-                  ]}
-                >
-                  <View style={styles.messageBody}>
-                    {queuedPosition !== null ? (
-                      <View style={styles.messageQueuedBadge}>
-                        <Text style={styles.messageQueuedBadgeText}>
-                          {queuedPosition === 1 ? "Queued next" : `Queued ${queuedPosition}`}
-                        </Text>
-                      </View>
-                    ) : null}
-                    {hasMessageText || message.streaming ? (
-                      hasMessageText ? (
-                        message.role === "assistant" ? (
-                          <MarkdownMessage value={message.text} />
-                        ) : (
-                          <Text
-                            style={[
-                              styles.messageText,
-                              message.role === "user"
-                                ? styles.messageTextUser
-                                : styles.messageTextAssistant,
-                            ]}
-                          >
-                            {message.text}
-                          </Text>
-                        )
-                      ) : (
-                        <Text style={[styles.messageText, styles.messageTextAssistant]}>
-                          Streaming...
-                        </Text>
-                      )
-                    ) : null}
-
-                    {messageAttachmentPreviews.length > 0 ? (
-                      <View style={styles.messageAttachmentRow}>
-                        {messageAttachmentPreviews.map((attachment) => (
-                          <View key={attachment.id} style={styles.messageAttachmentTile}>
-                            <Image
-                              resizeMode="cover"
-                              source={{ uri: attachment.uri }}
-                              style={styles.messageAttachmentImage}
-                            />
-                          </View>
-                        ))}
-                      </View>
-                    ) : null}
-                  </View>
-                </View>
-                {revealedMessageId === message.id ? (
-                  <Animated.View
-                    style={[
-                      styles.messageMetaReveal,
-                      { opacity: messageMetaOpacity },
-                      message.role === "user"
-                        ? styles.messageMetaRevealUser
-                        : styles.messageMetaRevealAssistant,
-                    ]}
-                  >
-                    <Text style={styles.messageMetaRevealText}>
-                      {formatTimestamp(message.updatedAt)}
-                      {message.streaming ? " / streaming" : ""}
-                    </Text>
-                  </Animated.View>
-                ) : null}
-              </Pressable>
-            );
-          })
-        ) : (
-          <View style={styles.emptyConversation}>
-            <Text style={styles.sectionTitle}>No output yet</Text>
-            <Text style={styles.helperText}>Send the first instruction to open the stream.</Text>
-          </View>
-        )}
-
-        {showWaitingIndicator ? (
-          <Animated.View
-            style={[
-              styles.waitingIndicator,
-              {
-                opacity: waitingIndicatorMotion.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [0.55, 1],
-                }),
-                transform: [
-                  {
-                    translateY: waitingIndicatorMotion.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, -4],
-                    }),
-                  },
-                ],
-              },
-            ]}
-          >
-            <Text style={styles.waitingIndicatorText}>{waitingIndicatorLabel}</Text>
-          </Animated.View>
-        ) : null}
-      </ScrollView>
+        updateCellsBatchingPeriod={32}
+        windowSize={7}
+      />
 
       <View
         style={[
