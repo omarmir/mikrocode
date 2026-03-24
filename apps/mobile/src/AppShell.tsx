@@ -34,10 +34,13 @@ import {
   Image,
   Keyboard,
   KeyboardAvoidingView,
+  type LayoutChangeEvent,
   PanResponder,
   Platform,
   Pressable,
   RefreshControl,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   ScrollView,
   StyleSheet,
   Switch,
@@ -64,6 +67,7 @@ import type {
   GitBranch,
   GitListBranchesResult,
   GitStatusResult,
+  OrchestrationGetTurnDiffResult,
   OrchestrationMessage,
   OrchestrationProposedPlan,
   OrchestrationProject,
@@ -97,6 +101,13 @@ import {
   type AppThemeAccent,
   type AppThemeNeutral,
 } from "./theme";
+import {
+  buildThreadDiffEntries,
+  buildThreadTimelineEntries,
+  parseUnifiedDiff,
+  type ParsedUnifiedDiffFile,
+  type ThreadDiffEntry,
+} from "./threadDiffs";
 import { useBackendConnection } from "./useBackendConnection";
 
 const FALLBACK_MODEL = MOBILE_DEFAULT_MODEL;
@@ -112,6 +123,7 @@ const COMPOSER_INPUT_MAX_HEIGHT = 144;
 const COMPOSER_INPUT_PADDING_TOP = 4;
 const COMPOSER_INPUT_PADDING_BOTTOM = 6;
 const COMPOSER_INPUT_PADDING_HORIZONTAL = 2;
+const MESSAGE_SCROLL_STICKY_THRESHOLD = 72;
 const COMPOSER_INPUT_HEIGHT_BUFFER = Platform.select({
   android: 8,
   default: 2,
@@ -823,42 +835,19 @@ type PendingUserInputRequest = {
 
 type PendingUserInputSelectionState = Record<string, Record<string, string | string[]>>;
 type PendingUserInputOtherState = Record<string, Record<string, string>>;
-type ThreadTimelineMessageEntry = {
-  readonly kind: "message";
-  readonly id: string;
-  readonly createdAt: string;
-  readonly message: OrchestrationMessage;
+type HydratedTurnDiffState = {
+  readonly status: "idle" | "loading" | "ready" | "error";
+  readonly updatedAt: string | null;
+  readonly result: OrchestrationGetTurnDiffResult | null;
+  readonly errorMessage: string | null;
 };
-type ThreadTimelineProposedPlanEntry = {
-  readonly kind: "proposedPlan";
-  readonly id: string;
-  readonly createdAt: string;
-  readonly proposedPlan: OrchestrationProposedPlan;
-};
-type ThreadTimelineActivityGroupEntry = {
-  readonly kind: "activityGroup";
-  readonly id: string;
-  readonly createdAt: string;
-  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
-};
-type ThreadTimelineEntry =
-  | ThreadTimelineMessageEntry
-  | ThreadTimelineProposedPlanEntry
-  | ThreadTimelineActivityGroupEntry;
 
-const INLINE_ACTIVITY_KINDS = new Set([
-  "content.delta",
-  "runtime.warning",
-  "runtime.error",
-  "turn.diff.updated",
-  "turn.plan.updated",
-  "task.started",
-  "task.progress",
-  "task.completed",
-  "tool.started",
-  "tool.updated",
-  "tool.completed",
-]);
+const DIFF_FILE_LINE_LIMIT = 200;
+type MessageScrollMetrics = {
+  contentHeight: number;
+  viewportHeight: number;
+  offsetY: number;
+};
 
 function readPayloadBoolean(payload: unknown, key: string) {
   const record = asRecord(payload);
@@ -914,153 +903,6 @@ function readPayloadQuestions(payload: unknown): ReadonlyArray<UserInputQuestion
       } satisfies UserInputQuestion,
     ];
   });
-}
-
-function shouldRenderInlineActivity(activity: OrchestrationThreadActivity) {
-  return INLINE_ACTIVITY_KINDS.has(activity.kind);
-}
-
-function timelineMessagePriority(message: OrchestrationMessage) {
-  switch (message.role) {
-    case "user":
-      return 0;
-    case "assistant":
-      return 2;
-    default:
-      return 3;
-  }
-}
-
-function compareInlineActivities(
-  left: OrchestrationThreadActivity,
-  right: OrchestrationThreadActivity,
-) {
-  if (
-    left.sequence !== undefined &&
-    right.sequence !== undefined &&
-    left.sequence !== right.sequence
-  ) {
-    return left.sequence - right.sequence;
-  }
-  if (left.createdAt !== right.createdAt) {
-    return left.createdAt.localeCompare(right.createdAt);
-  }
-  return left.id.localeCompare(right.id);
-}
-
-function buildThreadTimelineEntries(
-  messages: ReadonlyArray<OrchestrationMessage>,
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-  proposedPlans: ReadonlyArray<OrchestrationProposedPlan>,
-): ReadonlyArray<ThreadTimelineEntry> {
-  const merged = sortReadonlyArray(
-    [
-      ...messages.map((message) => ({ kind: "message" as const, message })),
-      ...proposedPlans.map((proposedPlan) => ({ kind: "proposedPlan" as const, proposedPlan })),
-      ...activities
-        .filter((activity) => shouldRenderInlineActivity(activity))
-        .map((activity) => ({ kind: "activity" as const, activity })),
-    ],
-    (left, right) => {
-      if (left.kind === "activity" && right.kind === "activity") {
-        return compareInlineActivities(left.activity, right.activity);
-      }
-
-      const leftCreatedAt =
-        left.kind === "message"
-          ? left.message.createdAt
-          : left.kind === "proposedPlan"
-            ? left.proposedPlan.createdAt
-            : left.activity.createdAt;
-      const rightCreatedAt =
-        right.kind === "message"
-          ? right.message.createdAt
-          : right.kind === "proposedPlan"
-            ? right.proposedPlan.createdAt
-            : right.activity.createdAt;
-      if (leftCreatedAt !== rightCreatedAt) {
-        return leftCreatedAt.localeCompare(rightCreatedAt);
-      }
-
-      const leftPriority =
-        left.kind === "message"
-          ? timelineMessagePriority(left.message)
-          : left.kind === "proposedPlan"
-            ? 2
-            : 1;
-      const rightPriority =
-        right.kind === "message"
-          ? timelineMessagePriority(right.message)
-          : right.kind === "proposedPlan"
-            ? 2
-            : 1;
-      if (leftPriority !== rightPriority) {
-        return leftPriority - rightPriority;
-      }
-
-      const leftId =
-        left.kind === "message"
-          ? left.message.id
-          : left.kind === "proposedPlan"
-            ? left.proposedPlan.id
-            : left.activity.id;
-      const rightId =
-        right.kind === "message"
-          ? right.message.id
-          : right.kind === "proposedPlan"
-            ? right.proposedPlan.id
-            : right.activity.id;
-      return leftId.localeCompare(rightId);
-    },
-  );
-
-  const timeline: ThreadTimelineEntry[] = [];
-  let bufferedActivities: OrchestrationThreadActivity[] = [];
-
-  const flushBufferedActivities = () => {
-    const firstActivity = bufferedActivities[0];
-    const lastActivity = bufferedActivities[bufferedActivities.length - 1];
-    if (!firstActivity || !lastActivity) {
-      bufferedActivities = [];
-      return;
-    }
-
-    timeline.push({
-      kind: "activityGroup",
-      id: `activity-group:${firstActivity.id}:${lastActivity.id}`,
-      createdAt: firstActivity.createdAt,
-      activities: bufferedActivities,
-    });
-    bufferedActivities = [];
-  };
-
-  for (const entry of merged) {
-    if (entry.kind === "activity") {
-      bufferedActivities = [...bufferedActivities, entry.activity];
-      continue;
-    }
-
-    flushBufferedActivities();
-    if (entry.kind === "message") {
-      timeline.push({
-        kind: "message",
-        id: entry.message.id,
-        createdAt: entry.message.createdAt,
-        message: entry.message,
-      });
-      continue;
-    }
-
-    timeline.push({
-      kind: "proposedPlan",
-      id: `proposed-plan:${entry.proposedPlan.id}`,
-      createdAt: entry.proposedPlan.createdAt,
-      proposedPlan: entry.proposedPlan,
-    });
-  }
-
-  flushBufferedActivities();
-  return timeline;
 }
 
 function formatProposedPlanStatus(proposedPlan: OrchestrationProposedPlan) {
@@ -1152,6 +994,50 @@ function activityGroupPreview(activities: ReadonlyArray<OrchestrationThreadActiv
   }
 
   return summaries.slice(Math.max(0, summaries.length - 3)).join(" / ");
+}
+
+function formatThreadDiffStateLabel(entry: ThreadDiffEntry) {
+  switch (entry.state) {
+    case "streaming":
+      return "Streaming";
+    case "ready":
+      return "Ready";
+    case "error":
+      return "Error";
+    default:
+      return "Unavailable";
+  }
+}
+
+function formatThreadDiffStats(
+  files: ReadonlyArray<{
+    readonly additions: number;
+    readonly deletions: number;
+  }>,
+) {
+  const additions = files.reduce((total, file) => total + file.additions, 0);
+  const deletions = files.reduce((total, file) => total + file.deletions, 0);
+  const fileLabel = `${files.length} file${files.length === 1 ? "" : "s"}`;
+  return `${fileLabel} / +${additions} -${deletions}`;
+}
+
+function summarizeThreadDiffPreview(entry: ThreadDiffEntry) {
+  if (entry.files.length > 0) {
+    return entry.files
+      .slice(0, 3)
+      .map((file) => file.path)
+      .join(" / ");
+  }
+
+  if (entry.previewUnifiedDiff) {
+    return summarizePreviewText(entry.previewUnifiedDiff);
+  }
+
+  return null;
+}
+
+function threadDiffCacheKey(threadId: string, turnId: string) {
+  return `${threadId}:${turnId}`;
 }
 
 function activityIcon(activity: OrchestrationThreadActivity): FeatherIconName {
@@ -1295,6 +1181,165 @@ function TimelineCodeBlock({
           {value}
         </Text>
       </ScrollView>
+    </View>
+  );
+}
+
+function ThreadDiffCard({
+  entry,
+  expanded,
+  hydratedDiff,
+  onToggle,
+}: {
+  readonly entry: ThreadDiffEntry;
+  readonly expanded: boolean;
+  readonly hydratedDiff: HydratedTurnDiffState | null;
+  readonly onToggle: () => void;
+}) {
+  const { styles, theme } = useAppThemeContext();
+  const [expandedFileIds, setExpandedFileIds] = useState<Record<string, true>>({});
+  const unifiedDiff = hydratedDiff?.result?.diff ?? entry.previewUnifiedDiff ?? "";
+  const parsedFiles = useMemo<ReadonlyArray<ParsedUnifiedDiffFile>>(
+    () => parseUnifiedDiff(unifiedDiff),
+    [unifiedDiff],
+  );
+  const summaryFiles = useMemo(
+    () =>
+      entry.files.length > 0
+        ? entry.files
+        : parsedFiles.map((file) => ({
+            path: file.path,
+            kind: "modified",
+            additions: file.additions,
+            deletions: file.deletions,
+          })),
+    [entry.files, parsedFiles],
+  );
+  const preview = summarizeThreadDiffPreview(entry);
+
+  return (
+    <View style={styles.diffCard}>
+      <Pressable onPress={onToggle} style={styles.diffCardSummaryRow}>
+        <View style={styles.diffCardSummaryHeader}>
+          <Feather
+            color={theme.muted}
+            name={expanded ? "chevron-down" : "chevron-right"}
+            size={14}
+          />
+          <Feather color={theme.accent} name="edit-3" size={14} />
+          <Text style={styles.diffCardSummaryTitle}>
+            {summaryFiles.length > 0 ? formatThreadDiffStats(summaryFiles) : "Changes"}
+          </Text>
+        </View>
+        <Text style={styles.diffCardSummaryMeta}>{formatTimestamp(entry.updatedAt)}</Text>
+      </Pressable>
+      <View style={styles.diffCardStatusRow}>
+        <Text
+          style={[
+            styles.diffCardStatus,
+            entry.state === "streaming" && styles.diffCardStatusStreaming,
+            entry.state === "ready" && styles.diffCardStatusReady,
+            entry.state === "error" && styles.diffCardStatusError,
+            entry.state === "missing" && styles.diffCardStatusMissing,
+          ]}
+        >
+          {formatThreadDiffStateLabel(entry)}
+        </Text>
+        {entry.checkpointTurnCount !== null ? (
+          <Text style={styles.diffCardStatusMeta}>{`Turn ${entry.checkpointTurnCount}`}</Text>
+        ) : null}
+      </View>
+      {preview ? <Text style={styles.diffCardPreview}>{preview}</Text> : null}
+      {expanded ? (
+        <View style={styles.diffCardExpanded}>
+          {hydratedDiff?.status === "loading" ? (
+            <Text style={styles.diffCardHint}>Loading canonical diff...</Text>
+          ) : null}
+          {hydratedDiff?.status === "error" ? (
+            <Text style={styles.diffCardErrorText}>{hydratedDiff.errorMessage}</Text>
+          ) : null}
+          {entry.previewTruncated ? (
+            <Text style={styles.diffCardHint}>
+              Streaming preview was truncated. Expand after completion for the full patch.
+            </Text>
+          ) : null}
+          {parsedFiles.length > 0 ? (
+            parsedFiles.map((file) => {
+              const isExpanded = expandedFileIds[file.id] === true;
+              const visibleLines = isExpanded
+                ? file.lines
+                : file.lines.slice(0, DIFF_FILE_LINE_LIMIT);
+              return (
+                <View key={file.id} style={styles.diffFileBlock}>
+                  <View style={styles.diffFileHeader}>
+                    <Text numberOfLines={1} style={styles.diffFilePath}>
+                      {file.path}
+                    </Text>
+                    <Text
+                      style={styles.diffFileStats}
+                    >{`+${file.additions} -${file.deletions}`}</Text>
+                  </View>
+                  <ScrollView
+                    horizontal
+                    style={styles.diffFileScroll}
+                    contentContainerStyle={styles.diffFileScrollContent}
+                  >
+                    <View style={styles.diffFileLines}>
+                      {visibleLines.map((line) => (
+                        <View
+                          key={line.id}
+                          style={[
+                            styles.diffLineRow,
+                            line.kind === "hunk" && styles.diffLineRowHunk,
+                            line.kind === "addition" && styles.diffLineRowAddition,
+                            line.kind === "deletion" && styles.diffLineRowDeletion,
+                          ]}
+                        >
+                          <Text
+                            selectable
+                            style={[
+                              styles.diffLineText,
+                              line.kind === "hunk" && styles.diffLineTextHunk,
+                              line.kind === "addition" && styles.diffLineTextAddition,
+                              line.kind === "deletion" && styles.diffLineTextDeletion,
+                              line.kind === "meta" && styles.diffLineTextMeta,
+                            ]}
+                          >
+                            {line.text || " "}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  </ScrollView>
+                  {file.lines.length > visibleLines.length ? (
+                    <Pressable
+                      onPress={() => {
+                        setExpandedFileIds((current) => ({
+                          ...current,
+                          [file.id]: true,
+                        }));
+                      }}
+                      style={styles.diffFileMoreButton}
+                    >
+                      <Text style={styles.diffFileMoreButtonLabel}>
+                        {`Show ${file.lines.length - visibleLines.length} more lines`}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              );
+            })
+          ) : unifiedDiff.trim().length > 0 ? (
+            <TimelineCodeBlock language="diff" value={unifiedDiff} />
+          ) : (
+            <Text style={styles.diffCardHint}>
+              {entry.state === "missing"
+                ? "No checkpoint-backed diff is available for this turn."
+                : "Waiting for file changes..."}
+            </Text>
+          )}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -1921,6 +1966,7 @@ function AppShellContent() {
     gitRunStackedAction,
     gitStatus,
     getConversationCapabilities,
+    getTurnDiff,
     interruptTurn,
     lastPushSequence,
     listDirectory,
@@ -1996,6 +2042,10 @@ function AppShellContent() {
   const [expandedActivityGroupIds, setExpandedActivityGroupIds] = useState<Record<string, true>>(
     {},
   );
+  const [expandedDiffIds, setExpandedDiffIds] = useState<Record<string, true>>({});
+  const [hydratedTurnDiffs, setHydratedTurnDiffs] = useState<Record<string, HydratedTurnDiffState>>(
+    {},
+  );
   const [revealedMessageId, setRevealedMessageId] = useState<string | null>(null);
   const [projectBuilderOpen, setProjectBuilderOpen] = useState(false);
   const [projectBuilderRoot, setProjectBuilderRoot] = useState<string | null>(null);
@@ -2035,6 +2085,12 @@ function AppShellContent() {
   const processingServerNotificationRef = useRef(false);
   const directoryLoadSequenceRef = useRef(0);
   const waitingIndicatorMotion = useRef(new Animated.Value(0)).current;
+  const messageScrollMetricsRef = useRef<MessageScrollMetrics>({
+    contentHeight: 0,
+    viewportHeight: 0,
+    offsetY: 0,
+  });
+  const forceScrollToBottomRef = useRef(false);
 
   const allProjects = sortProjects(snapshot?.projects ?? []);
   const visibleProjectIds = new Set(allProjects.map((project) => project.id));
@@ -2050,14 +2106,16 @@ function AppShellContent() {
   const selectedProject = allProjects.find((project) => project.id === effectiveProjectId) ?? null;
   const selectedProjectThreads = selectedProject ? sortThreads(allThreads, selectedProject.id) : [];
   const messages = sortMessages(selectedThread?.messages ?? []);
+  const threadDiffEntries = useMemo(() => buildThreadDiffEntries(selectedThread), [selectedThread]);
   const timelineEntries = useMemo(
     () =>
-      buildThreadTimelineEntries(
+      buildThreadTimelineEntries({
         messages,
-        selectedThread?.activities ?? [],
-        selectedThread?.proposedPlans ?? [],
-      ),
-    [messages, selectedThread?.activities, selectedThread?.proposedPlans],
+        activities: selectedThread?.activities ?? [],
+        proposedPlans: selectedThread?.proposedPlans ?? [],
+        diffs: threadDiffEntries,
+      }),
+    [messages, selectedThread?.activities, selectedThread?.proposedPlans, threadDiffEntries],
   );
   const queuedPositionByMessageId = useMemo(() => {
     const positions = new Map<string, number>();
@@ -2316,9 +2374,84 @@ function AppShellContent() {
       messageMetaTimerRef.current = null;
     }
     setExpandedActivityGroupIds({});
+    setExpandedDiffIds({});
     setRevealedMessageId(null);
     messageMetaOpacity.setValue(0);
   }, [messageMetaOpacity, selectedThreadConversationId]);
+
+  useEffect(() => {
+    setHydratedTurnDiffs((current) => {
+      if (!selectedThreadConversationId) {
+        return {};
+      }
+
+      const nextEntries = Object.entries(current).filter(([key]) =>
+        key.startsWith(`${selectedThreadConversationId}:`),
+      );
+      return nextEntries.length === Object.keys(current).length
+        ? current
+        : Object.fromEntries(nextEntries);
+    });
+  }, [selectedThreadConversationId]);
+
+  const ensureHydratedTurnDiff = useCallback(
+    async (entry: ThreadDiffEntry) => {
+      if (!selectedThread || entry.state !== "ready" || entry.checkpointTurnCount === null) {
+        return;
+      }
+
+      const cacheKey = threadDiffCacheKey(selectedThread.id, entry.turnId);
+      const cached = hydratedTurnDiffs[cacheKey];
+      if (
+        cached?.status === "ready" &&
+        cached.updatedAt === entry.updatedAt &&
+        cached.result !== null
+      ) {
+        return;
+      }
+      if (cached?.status === "loading" && cached.updatedAt === entry.updatedAt) {
+        return;
+      }
+
+      setHydratedTurnDiffs((current) => ({
+        ...current,
+        [cacheKey]: {
+          status: "loading",
+          updatedAt: entry.updatedAt,
+          result: current[cacheKey]?.result ?? null,
+          errorMessage: null,
+        },
+      }));
+
+      try {
+        const result = await getTurnDiff({
+          threadId: selectedThread.id,
+          fromTurnCount: Math.max(0, entry.checkpointTurnCount - 1),
+          toTurnCount: entry.checkpointTurnCount,
+        });
+        setHydratedTurnDiffs((current) => ({
+          ...current,
+          [cacheKey]: {
+            status: "ready",
+            updatedAt: entry.updatedAt,
+            result,
+            errorMessage: null,
+          },
+        }));
+      } catch (error) {
+        setHydratedTurnDiffs((current) => ({
+          ...current,
+          [cacheKey]: {
+            status: "error",
+            updatedAt: entry.updatedAt,
+            result: current[cacheKey]?.result ?? null,
+            errorMessage: error instanceof Error ? error.message : "Failed to load diff.",
+          },
+        }));
+      }
+    },
+    [getTurnDiff, hydratedTurnDiffs, selectedThread],
+  );
 
   useEffect(() => {
     return () => {
@@ -2333,6 +2466,54 @@ function AppShellContent() {
     messagesScrollRef.current?.scrollToEnd({ animated: true });
   };
 
+  const requestScrollConversationToEnd = useCallback(() => {
+    forceScrollToBottomRef.current = true;
+    requestAnimationFrame(() => {
+      scrollConversationToEnd();
+      forceScrollToBottomRef.current = false;
+    });
+  }, []);
+
+  const isNearConversationBottom = useCallback(() => {
+    const { contentHeight, viewportHeight, offsetY } = messageScrollMetricsRef.current;
+    if (viewportHeight <= 0) {
+      return true;
+    }
+
+    const distanceFromBottom = contentHeight - (offsetY + viewportHeight);
+    return distanceFromBottom <= MESSAGE_SCROLL_STICKY_THRESHOLD;
+  }, []);
+
+  const handleConversationScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    messageScrollMetricsRef.current = {
+      contentHeight: contentSize.height,
+      viewportHeight: layoutMeasurement.height,
+      offsetY: contentOffset.y,
+    };
+  }, []);
+
+  const handleConversationLayout = useCallback((event: LayoutChangeEvent) => {
+    messageScrollMetricsRef.current = {
+      ...messageScrollMetricsRef.current,
+      viewportHeight: event.nativeEvent.layout.height,
+    };
+  }, []);
+
+  const handleConversationContentSizeChange = useCallback(
+    (_width: number, height: number) => {
+      const shouldStickToBottom = forceScrollToBottomRef.current || isNearConversationBottom();
+      messageScrollMetricsRef.current = {
+        ...messageScrollMetricsRef.current,
+        contentHeight: height,
+      };
+      if (shouldStickToBottom) {
+        requestScrollConversationToEnd();
+      }
+    },
+    [isNearConversationBottom, requestScrollConversationToEnd],
+  );
+
   useEffect(() => {
     if (!selectedThreadConversationId) {
       return;
@@ -2340,13 +2521,13 @@ function AppShellContent() {
 
     const keyboardShowEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const subscription = Keyboard.addListener(keyboardShowEvent, () => {
-      requestAnimationFrame(scrollConversationToEnd);
+      requestScrollConversationToEnd();
     });
 
     return () => {
       subscription.remove();
     };
-  }, [selectedThreadConversationId]);
+  }, [requestScrollConversationToEnd, selectedThreadConversationId]);
 
   useEffect(() => {
     if (!selectedThreadConversationId) {
@@ -2362,8 +2543,8 @@ function AppShellContent() {
       return;
     }
 
-    requestAnimationFrame(scrollConversationToEnd);
-  }, [selectedThreadConversationId, timelineEntries.length]);
+    requestScrollConversationToEnd();
+  }, [requestScrollConversationToEnd, selectedThreadConversationId, timelineEntries.length]);
 
   useEffect(() => {
     if (Platform.OS !== "android") {
@@ -2987,6 +3168,26 @@ function AppShellContent() {
         [groupId]: true,
       };
     });
+  };
+
+  const toggleDiffEntry = (entry: ThreadDiffEntry) => {
+    const nextExpanded = !(entry.id in expandedDiffIds);
+    setExpandedDiffIds((current) => {
+      if (entry.id in current) {
+        const next = { ...current };
+        delete next[entry.id];
+        return next;
+      }
+
+      return {
+        ...current,
+        [entry.id]: true,
+      };
+    });
+
+    if (nextExpanded) {
+      void ensureHydratedTurnDiff(entry);
+    }
   };
 
   const showToast = (message: string) => {
@@ -4050,9 +4251,10 @@ function AppShellContent() {
         contentContainerStyle={styles.messagesScrollContent}
         keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         keyboardShouldPersistTaps="handled"
-        onContentSizeChange={() => {
-          requestAnimationFrame(scrollConversationToEnd);
-        }}
+        onContentSizeChange={handleConversationContentSizeChange}
+        onLayout={handleConversationLayout}
+        onScroll={handleConversationScroll}
+        scrollEventThrottle={16}
         refreshControl={
           <RefreshControl
             onRefresh={() => {
@@ -4074,6 +4276,25 @@ function AppShellContent() {
                   expanded={entry.id in expandedActivityGroupIds}
                   onToggle={() => {
                     toggleActivityGroup(entry.id);
+                  }}
+                />
+              );
+            }
+
+            if (entry.kind === "diff") {
+              const hydratedDiff =
+                selectedThread === null
+                  ? null
+                  : (hydratedTurnDiffs[threadDiffCacheKey(selectedThread.id, entry.turnId)] ??
+                    null);
+              return (
+                <ThreadDiffCard
+                  key={entry.id}
+                  entry={entry}
+                  expanded={entry.id in expandedDiffIds}
+                  hydratedDiff={hydratedDiff}
+                  onToggle={() => {
+                    toggleDiffEntry(entry);
                   }}
                 />
               );
@@ -4418,7 +4639,7 @@ function AppShellContent() {
               onChangeText={updateDraft}
               onContentSizeChange={updateComposerInputHeight}
               onFocus={() => {
-                requestAnimationFrame(scrollConversationToEnd);
+                requestScrollConversationToEnd();
               }}
               placeholder="Type the next instruction..."
               placeholderTextColor={TERMINAL_MUTED}
@@ -5542,6 +5763,8 @@ function createStyles(theme: AppTheme) {
   const TERMINAL_ACCENT = theme.accent;
   const TERMINAL_ACCENT_SOFT = theme.accentSoft;
   const TERMINAL_ACCENT_SOFT_STRONG = theme.accentSoftStrong;
+  const TERMINAL_SUCCESS = theme.success;
+  const TERMINAL_SUCCESS_SOFT = theme.successSoft;
   const TERMINAL_WARNING = theme.warning;
   const TERMINAL_DANGER = theme.danger;
   const TERMINAL_DANGER_SOFT = theme.dangerSoft;
@@ -6763,6 +6986,184 @@ function createStyles(theme: AppTheme) {
       minWidth: "100%",
       paddingHorizontal: 8,
       paddingVertical: 8,
+    },
+    diffCard: {
+      alignSelf: "stretch",
+      backgroundColor: TERMINAL_PANEL_ALT,
+      borderLeftColor: TERMINAL_ACCENT,
+      borderLeftWidth: 2,
+      gap: 6,
+      marginVertical: 2,
+      paddingHorizontal: 8,
+      paddingVertical: 7,
+    },
+    diffCardSummaryRow: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 8,
+      justifyContent: "space-between",
+    },
+    diffCardSummaryHeader: {
+      alignItems: "center",
+      flex: 1,
+      flexDirection: "row",
+      gap: 8,
+    },
+    diffCardSummaryTitle: {
+      color: TERMINAL_TEXT,
+      flex: 1,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      lineHeight: 16,
+    },
+    diffCardSummaryMeta: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      paddingLeft: 8,
+    },
+    diffCardStatusRow: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 8,
+      paddingLeft: 22,
+    },
+    diffCardStatus: {
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.4,
+      textTransform: "uppercase",
+    },
+    diffCardStatusStreaming: {
+      color: TERMINAL_ACCENT,
+    },
+    diffCardStatusReady: {
+      color: TERMINAL_SUCCESS,
+    },
+    diffCardStatusError: {
+      color: TERMINAL_DANGER,
+    },
+    diffCardStatusMissing: {
+      color: TERMINAL_WARNING,
+    },
+    diffCardStatusMeta: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+    },
+    diffCardPreview: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 15,
+      paddingLeft: 22,
+    },
+    diffCardExpanded: {
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
+      gap: 8,
+      paddingTop: 8,
+    },
+    diffCardHint: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      lineHeight: 15,
+    },
+    diffCardErrorText: {
+      color: TERMINAL_DANGER,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      lineHeight: 15,
+    },
+    diffFileBlock: {
+      backgroundColor: TERMINAL_BG,
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      width: "100%",
+    },
+    diffFileHeader: {
+      alignItems: "center",
+      backgroundColor: TERMINAL_PANEL,
+      borderBottomColor: TERMINAL_BORDER,
+      borderBottomWidth: 1,
+      flexDirection: "row",
+      gap: 8,
+      justifyContent: "space-between",
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+    },
+    diffFilePath: {
+      color: TERMINAL_TEXT,
+      flex: 1,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+    },
+    diffFileStats: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+    },
+    diffFileScroll: {
+      maxWidth: "100%",
+    },
+    diffFileScrollContent: {
+      minWidth: "100%",
+    },
+    diffFileLines: {
+      minWidth: "100%",
+    },
+    diffLineRow: {
+      minWidth: "100%",
+      paddingHorizontal: 8,
+      paddingVertical: 1,
+    },
+    diffLineRowHunk: {
+      backgroundColor: TERMINAL_ACCENT_SOFT,
+    },
+    diffLineRowAddition: {
+      backgroundColor: TERMINAL_SUCCESS_SOFT,
+    },
+    diffLineRowDeletion: {
+      backgroundColor: TERMINAL_DANGER_SOFT,
+    },
+    diffLineText: {
+      color: TERMINAL_TEXT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      lineHeight: 16,
+    },
+    diffLineTextMeta: {
+      color: TERMINAL_MUTED,
+    },
+    diffLineTextHunk: {
+      color: TERMINAL_ACCENT,
+      fontWeight: "700",
+    },
+    diffLineTextAddition: {
+      color: TERMINAL_SUCCESS,
+    },
+    diffLineTextDeletion: {
+      color: TERMINAL_DANGER,
+    },
+    diffFileMoreButton: {
+      alignItems: "flex-start",
+      borderTopColor: TERMINAL_BORDER,
+      borderTopWidth: 1,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+    },
+    diffFileMoreButtonLabel: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.4,
+      textTransform: "uppercase",
     },
     emptyConversation: {
       alignItems: "flex-start",

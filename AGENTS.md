@@ -23,6 +23,11 @@ If a tradeoff is required, choose correctness and robustness over short-term con
 
 Long term maintainability is a core priority. If you add new functionality, first check if there is shared logic that can be extracted to a separate module. Duplicate logic across multiple files is a code smell and should be avoided. Don't be afraid to change existing code. Don't take shortcuts by just adding local logic to solve a problem.
 
+## React Native Compatibility
+
+- `apps/mobile` runs on React Native/Hermes. Do not assume newer JavaScript built-ins like `Array.prototype.toSorted`, `toReversed`, or `toSpliced` exist at runtime just because TypeScript accepts them.
+- For mobile code, prefer compatibility-safe patterns like copying arrays before `sort()`/`reverse()`, unless you have explicitly verified the runtime support or added a polyfill in this repo.
+
 ## Package Roles
 
 - `apps/server`: Node.js WebSocket server. Wraps Codex app-server (JSON-RPC over stdio), manages provider sessions, and brokers realtime state to connected clients.

@@ -52,6 +52,8 @@ export interface AppTheme {
   readonly accent: string;
   readonly accentSoft: string;
   readonly accentSoftStrong: string;
+  readonly success: string;
+  readonly successSoft: string;
   readonly warning: string;
   readonly warningSoft: string;
   readonly danger: string;
@@ -147,6 +149,8 @@ export function resolveAppTheme(settings: AppThemeSettings): AppTheme {
     accent,
     accentSoft: withAlpha(accent, 0.18),
     accentSoftStrong: withAlpha(accent, 0.3),
+    success: FLEXOKI_DARK_ACCENTS.green,
+    successSoft: withAlpha(FLEXOKI_DARK_ACCENTS.green, 0.18),
     warning: FLEXOKI_DARK_ACCENTS.yellow,
     warningSoft: withAlpha(FLEXOKI_DARK_ACCENTS.yellow, 0.18),
     danger: FLEXOKI_DARK_ACCENTS.red,

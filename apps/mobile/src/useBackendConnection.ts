@@ -6,6 +6,10 @@ import type {
   GitPrepareMainlineMergeResult,
   GitPullResult,
   GitRunStackedActionResult,
+  OrchestrationGetFullThreadDiffInput,
+  OrchestrationGetFullThreadDiffResult,
+  OrchestrationGetTurnDiffInput,
+  OrchestrationGetTurnDiffResult,
   OrchestrationThread,
   GitStatusResult,
   OrchestrationReadModel,
@@ -1039,6 +1043,24 @@ export function useBackendConnection() {
     },
   );
 
+  const getTurnDiff = useStableEvent(
+    async (input: OrchestrationGetTurnDiffInput): Promise<OrchestrationGetTurnDiffResult> => {
+      return runBusyCommand("Loading diff", () =>
+        request<OrchestrationGetTurnDiffResult>(MOBILE_WS_METHODS.getTurnDiff, input),
+      );
+    },
+  );
+
+  const getFullThreadDiff = useStableEvent(
+    async (
+      input: OrchestrationGetFullThreadDiffInput,
+    ): Promise<OrchestrationGetFullThreadDiffResult> => {
+      return runBusyCommand("Loading thread diff", () =>
+        request<OrchestrationGetFullThreadDiffResult>(MOBILE_WS_METHODS.getFullThreadDiff, input),
+      );
+    },
+  );
+
   return {
     connectionSettings,
     setConnectionSettings,
@@ -1097,5 +1119,7 @@ export function useBackendConnection() {
     gitPrepareMainlineMerge: (input: GitPrepareMainlineMergeInput) =>
       gitPrepareMainlineMerge(input),
     gitRunStackedAction: (input: GitRunStackedActionInput) => gitRunStackedAction(input),
+    getTurnDiff: (input: OrchestrationGetTurnDiffInput) => getTurnDiff(input),
+    getFullThreadDiff: (input: OrchestrationGetFullThreadDiffInput) => getFullThreadDiff(input),
   };
 }

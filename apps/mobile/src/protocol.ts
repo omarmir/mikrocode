@@ -28,6 +28,8 @@ import type {
 export const MOBILE_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getSnapshot: "orchestration.getSnapshot",
+  getTurnDiff: "orchestration.getTurnDiff",
+  getFullThreadDiff: "orchestration.getFullThreadDiff",
   projectsCreateDirectory: "projects.createDirectory",
   projectsCloneGitRepository: "projects.cloneGitRepository",
   projectsListDirectory: "projects.listDirectory",
