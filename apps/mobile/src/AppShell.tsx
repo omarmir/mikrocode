@@ -43,6 +43,7 @@ import {
   Switch,
   Text,
   TextInput,
+  type TextInputContentSizeChangeEventData,
   type TextStyle,
   View,
   type ViewStyle,
@@ -64,6 +65,7 @@ import type {
   GitListBranchesResult,
   GitStatusResult,
   OrchestrationMessage,
+  OrchestrationProposedPlan,
   OrchestrationProject,
   OrchestrationThread,
   OrchestrationThreadActivity,
@@ -103,6 +105,17 @@ const WIDE_LAYOUT_BREAKPOINT = 1180;
 const PANEL_ANIMATION_DURATION_MS = 220;
 const DEVICE_NOTIFICATION_CHANNEL_ID = "turn-updates";
 const ANDROID_EXPO_GO_APP_OWNERSHIP = "expo";
+const COMPOSER_INPUT_FONT_SIZE = 12;
+const COMPOSER_INPUT_LINE_HEIGHT = 18;
+const COMPOSER_INPUT_MIN_HEIGHT = 48;
+const COMPOSER_INPUT_MAX_HEIGHT = 144;
+const COMPOSER_INPUT_PADDING_TOP = 4;
+const COMPOSER_INPUT_PADDING_BOTTOM = 6;
+const COMPOSER_INPUT_PADDING_HORIZONTAL = 2;
+const COMPOSER_INPUT_HEIGHT_BUFFER = Platform.select({
+  android: 8,
+  default: 2,
+});
 const TERMINAL_FONT_FAMILY = Platform.select({
   ios: "Menlo",
   android: "monospace",
@@ -816,13 +829,22 @@ type ThreadTimelineMessageEntry = {
   readonly createdAt: string;
   readonly message: OrchestrationMessage;
 };
+type ThreadTimelineProposedPlanEntry = {
+  readonly kind: "proposedPlan";
+  readonly id: string;
+  readonly createdAt: string;
+  readonly proposedPlan: OrchestrationProposedPlan;
+};
 type ThreadTimelineActivityGroupEntry = {
   readonly kind: "activityGroup";
   readonly id: string;
   readonly createdAt: string;
   readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
 };
-type ThreadTimelineEntry = ThreadTimelineMessageEntry | ThreadTimelineActivityGroupEntry;
+type ThreadTimelineEntry =
+  | ThreadTimelineMessageEntry
+  | ThreadTimelineProposedPlanEntry
+  | ThreadTimelineActivityGroupEntry;
 
 const INLINE_ACTIVITY_KINDS = new Set([
   "content.delta",
@@ -929,10 +951,12 @@ function compareInlineActivities(
 function buildThreadTimelineEntries(
   messages: ReadonlyArray<OrchestrationMessage>,
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  proposedPlans: ReadonlyArray<OrchestrationProposedPlan>,
 ): ReadonlyArray<ThreadTimelineEntry> {
   const merged = sortReadonlyArray(
     [
       ...messages.map((message) => ({ kind: "message" as const, message })),
+      ...proposedPlans.map((proposedPlan) => ({ kind: "proposedPlan" as const, proposedPlan })),
       ...activities
         .filter((activity) => shouldRenderInlineActivity(activity))
         .map((activity) => ({ kind: "activity" as const, activity })),
@@ -943,21 +967,49 @@ function buildThreadTimelineEntries(
       }
 
       const leftCreatedAt =
-        left.kind === "message" ? left.message.createdAt : left.activity.createdAt;
+        left.kind === "message"
+          ? left.message.createdAt
+          : left.kind === "proposedPlan"
+            ? left.proposedPlan.createdAt
+            : left.activity.createdAt;
       const rightCreatedAt =
-        right.kind === "message" ? right.message.createdAt : right.activity.createdAt;
+        right.kind === "message"
+          ? right.message.createdAt
+          : right.kind === "proposedPlan"
+            ? right.proposedPlan.createdAt
+            : right.activity.createdAt;
       if (leftCreatedAt !== rightCreatedAt) {
         return leftCreatedAt.localeCompare(rightCreatedAt);
       }
 
-      const leftPriority = left.kind === "message" ? timelineMessagePriority(left.message) : 1;
-      const rightPriority = right.kind === "message" ? timelineMessagePriority(right.message) : 1;
+      const leftPriority =
+        left.kind === "message"
+          ? timelineMessagePriority(left.message)
+          : left.kind === "proposedPlan"
+            ? 2
+            : 1;
+      const rightPriority =
+        right.kind === "message"
+          ? timelineMessagePriority(right.message)
+          : right.kind === "proposedPlan"
+            ? 2
+            : 1;
       if (leftPriority !== rightPriority) {
         return leftPriority - rightPriority;
       }
 
-      const leftId = left.kind === "message" ? left.message.id : left.activity.id;
-      const rightId = right.kind === "message" ? right.message.id : right.activity.id;
+      const leftId =
+        left.kind === "message"
+          ? left.message.id
+          : left.kind === "proposedPlan"
+            ? left.proposedPlan.id
+            : left.activity.id;
+      const rightId =
+        right.kind === "message"
+          ? right.message.id
+          : right.kind === "proposedPlan"
+            ? right.proposedPlan.id
+            : right.activity.id;
       return leftId.localeCompare(rightId);
     },
   );
@@ -989,16 +1041,33 @@ function buildThreadTimelineEntries(
     }
 
     flushBufferedActivities();
+    if (entry.kind === "message") {
+      timeline.push({
+        kind: "message",
+        id: entry.message.id,
+        createdAt: entry.message.createdAt,
+        message: entry.message,
+      });
+      continue;
+    }
+
     timeline.push({
-      kind: "message",
-      id: entry.message.id,
-      createdAt: entry.message.createdAt,
-      message: entry.message,
+      kind: "proposedPlan",
+      id: `proposed-plan:${entry.proposedPlan.id}`,
+      createdAt: entry.proposedPlan.createdAt,
+      proposedPlan: entry.proposedPlan,
     });
   }
 
   flushBufferedActivities();
   return timeline;
+}
+
+function formatProposedPlanStatus(proposedPlan: OrchestrationProposedPlan) {
+  if (proposedPlan.implementedAt) {
+    return `Implemented ${formatTimestamp(proposedPlan.implementedAt)}`;
+  }
+  return "Ready to implement";
 }
 
 function summarizePreviewText(value: string, limit = 140) {
@@ -1798,6 +1867,22 @@ function MarkdownMessage({ value }: { readonly value: string }) {
   return <View style={styles.messageMarkdownRoot}>{normalizedElements}</View>;
 }
 
+function ProposedPlanCard({ proposedPlan }: { readonly proposedPlan: OrchestrationProposedPlan }) {
+  const { styles, theme } = useAppThemeContext();
+  return (
+    <View style={styles.proposedPlanCard}>
+      <View style={styles.proposedPlanHeader}>
+        <View style={styles.proposedPlanHeaderCopy}>
+          <Text style={styles.proposedPlanEyebrow}>Proposed plan</Text>
+          <Text style={styles.proposedPlanStatus}>{formatProposedPlanStatus(proposedPlan)}</Text>
+        </View>
+        <Feather color={theme.accent} name="file-text" size={15} />
+      </View>
+      <MarkdownMessage value={proposedPlan.planMarkdown} />
+    </View>
+  );
+}
+
 function isThreadWaitingForResponse(
   thread: OrchestrationThread | null,
   hasPendingServerResponse: boolean,
@@ -1881,6 +1966,12 @@ function AppShellContent() {
   const projectPickerWidth = Math.min(720, Math.max(320, width - 24));
   const projectPickerHeight = Math.min(640, Math.max(420, height - 24));
   const [androidKeyboardInset, setAndroidKeyboardInset] = useState(0);
+  const keyboardAwareViewportHeight =
+    Platform.OS === "android" && androidKeyboardInset > 0 ? height - androidKeyboardInset : height;
+  const pendingUserInputQuestionsMaxHeight = Math.max(
+    168,
+    Math.min(320, keyboardAwareViewportHeight * 0.34),
+  );
 
   const [navMenuOpen, setNavMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1930,6 +2021,7 @@ function AppShellContent() {
   const [gitBranchNameDraft, setGitBranchNameDraft] = useState("");
   const [gitMergeUseSquash, setGitMergeUseSquash] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [composerInputHeight, setComposerInputHeight] = useState(COMPOSER_INPUT_MIN_HEIGHT);
 
   const navTranslateX = useRef(new Animated.Value(-sidebarWidth)).current;
   const settingsTranslateX = useRef(new Animated.Value(floatingPanelWidth)).current;
@@ -1959,8 +2051,13 @@ function AppShellContent() {
   const selectedProjectThreads = selectedProject ? sortThreads(allThreads, selectedProject.id) : [];
   const messages = sortMessages(selectedThread?.messages ?? []);
   const timelineEntries = useMemo(
-    () => buildThreadTimelineEntries(messages, selectedThread?.activities ?? []),
-    [messages, selectedThread?.activities],
+    () =>
+      buildThreadTimelineEntries(
+        messages,
+        selectedThread?.activities ?? [],
+        selectedThread?.proposedPlans ?? [],
+      ),
+    [messages, selectedThread?.activities, selectedThread?.proposedPlans],
   );
   const queuedPositionByMessageId = useMemo(() => {
     const positions = new Map<string, number>();
@@ -2253,6 +2350,15 @@ function AppShellContent() {
 
   useEffect(() => {
     if (!selectedThreadConversationId) {
+      setComposerInputHeight(COMPOSER_INPUT_MIN_HEIGHT);
+      return;
+    }
+
+    setComposerInputHeight(COMPOSER_INPUT_MIN_HEIGHT);
+  }, [selectedThreadConversationId]);
+
+  useEffect(() => {
+    if (!selectedThreadConversationId) {
       return;
     }
 
@@ -2454,6 +2560,22 @@ function AppShellContent() {
     }
 
     setThreadDrafts((current) => ({ ...current, [selectedThread.id]: value }));
+  };
+
+  const updateComposerInputHeight = (event: {
+    readonly nativeEvent: TextInputContentSizeChangeEventData;
+  }) => {
+    const nextHeight = Math.min(
+      COMPOSER_INPUT_MAX_HEIGHT,
+      Math.max(
+        COMPOSER_INPUT_MIN_HEIGHT,
+        Math.ceil(event.nativeEvent.contentSize.height) +
+          COMPOSER_INPUT_PADDING_TOP +
+          COMPOSER_INPUT_PADDING_BOTTOM +
+          COMPOSER_INPUT_HEIGHT_BUFFER,
+      ),
+    );
+    setComposerInputHeight((current) => (current === nextHeight ? current : nextHeight));
   };
 
   const updateDraftAttachments = (
@@ -3399,6 +3521,7 @@ function AppShellContent() {
 
     setThreadDrafts((current) => ({ ...current, [selectedThread.id]: "" }));
     setThreadDraftAttachments((current) => ({ ...current, [selectedThread.id]: [] }));
+    setComposerInputHeight(COMPOSER_INPUT_MIN_HEIGHT);
     if (willQueueTurn) {
       showToast("Queued for next turn");
     } else if (willInterruptTurn) {
@@ -3956,6 +4079,10 @@ function AppShellContent() {
               );
             }
 
+            if (entry.kind === "proposedPlan") {
+              return <ProposedPlanCard key={entry.id} proposedPlan={entry.proposedPlan} />;
+            }
+
             const { message } = entry;
             const queuedPosition =
               message.role === "user" ? (queuedPositionByMessageId.get(message.id) ?? null) : null;
@@ -4146,72 +4273,82 @@ function AppShellContent() {
         {pendingUserInputRequest ? (
           <View style={styles.pendingUserInputPanel}>
             <Text style={styles.pendingUserInputEyebrow}>Model Question</Text>
-            {pendingUserInputRequest.questions.map((question) => {
-              const answerKey = getUserInputAnswerKey(selectedConversationProvider, question);
-              const selectedValue =
-                pendingUserInputSelections[pendingUserInputRequest.requestId]?.[answerKey];
-              const otherDraft =
-                pendingUserInputOtherDrafts[pendingUserInputRequest.requestId]?.[answerKey] ?? "";
-              const selectedValues = Array.isArray(selectedValue)
-                ? selectedValue
-                : typeof selectedValue === "string" && selectedValue.trim().length > 0
-                  ? [selectedValue]
-                  : [];
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              nestedScrollEnabled
+              style={[
+                styles.pendingUserInputQuestionsScroll,
+                { maxHeight: pendingUserInputQuestionsMaxHeight },
+              ]}
+              contentContainerStyle={styles.pendingUserInputQuestionsScrollContent}
+            >
+              {pendingUserInputRequest.questions.map((question) => {
+                const answerKey = getUserInputAnswerKey(selectedConversationProvider, question);
+                const selectedValue =
+                  pendingUserInputSelections[pendingUserInputRequest.requestId]?.[answerKey];
+                const otherDraft =
+                  pendingUserInputOtherDrafts[pendingUserInputRequest.requestId]?.[answerKey] ?? "";
+                const selectedValues = Array.isArray(selectedValue)
+                  ? selectedValue
+                  : typeof selectedValue === "string" && selectedValue.trim().length > 0
+                    ? [selectedValue]
+                    : [];
 
-              return (
-                <View key={question.id} style={styles.pendingUserInputQuestionCard}>
-                  <Text style={styles.pendingUserInputQuestionHeader}>{question.header}</Text>
-                  <Text style={styles.pendingUserInputQuestionText}>{question.question}</Text>
-                  <Text style={styles.pendingUserInputQuestionHint}>
-                    {question.multiSelect ? "Select one or more answers." : "Select one answer."}
-                  </Text>
-                  <View style={styles.pendingUserInputOptionList}>
-                    {question.options.map((option) => {
-                      const selected = selectedValues.includes(option.label);
-                      return (
-                        <Pressable
-                          key={`${question.id}:${option.label}`}
-                          disabled={!canRespondToPendingUserInput}
-                          onPress={() => {
-                            handleTogglePendingUserInputOption(question, option.label);
-                          }}
-                          style={[
-                            styles.pendingUserInputOptionButton,
-                            selected && styles.pendingUserInputOptionButtonSelected,
-                            !canRespondToPendingUserInput && styles.buttonDisabled,
-                          ]}
-                        >
-                          <Text
+                return (
+                  <View key={question.id} style={styles.pendingUserInputQuestionCard}>
+                    <Text style={styles.pendingUserInputQuestionHeader}>{question.header}</Text>
+                    <Text style={styles.pendingUserInputQuestionText}>{question.question}</Text>
+                    <Text style={styles.pendingUserInputQuestionHint}>
+                      {question.multiSelect ? "Select one or more answers." : "Select one answer."}
+                    </Text>
+                    <View style={styles.pendingUserInputOptionList}>
+                      {question.options.map((option) => {
+                        const selected = selectedValues.includes(option.label);
+                        return (
+                          <Pressable
+                            key={`${question.id}:${option.label}`}
+                            disabled={!canRespondToPendingUserInput}
+                            onPress={() => {
+                              handleTogglePendingUserInputOption(question, option.label);
+                            }}
                             style={[
-                              styles.pendingUserInputOptionLabel,
-                              selected && styles.pendingUserInputOptionLabelSelected,
+                              styles.pendingUserInputOptionButton,
+                              selected && styles.pendingUserInputOptionButtonSelected,
+                              !canRespondToPendingUserInput && styles.buttonDisabled,
                             ]}
                           >
-                            {option.label}
-                          </Text>
-                          <Text style={styles.pendingUserInputOptionDescription}>
-                            {option.description}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
+                            <Text
+                              style={[
+                                styles.pendingUserInputOptionLabel,
+                                selected && styles.pendingUserInputOptionLabelSelected,
+                              ]}
+                            >
+                              {option.label}
+                            </Text>
+                            <Text style={styles.pendingUserInputOptionDescription}>
+                              {option.description}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                    <TextInput
+                      editable={canRespondToPendingUserInput}
+                      onChangeText={(value) => {
+                        handleChangePendingUserInputOtherDraft(question, value);
+                      }}
+                      placeholder="Other"
+                      placeholderTextColor={theme.muted}
+                      style={[
+                        styles.pendingUserInputOtherInput,
+                        !canRespondToPendingUserInput && styles.buttonDisabled,
+                      ]}
+                      value={otherDraft}
+                    />
                   </View>
-                  <TextInput
-                    editable={canRespondToPendingUserInput}
-                    onChangeText={(value) => {
-                      handleChangePendingUserInputOtherDraft(question, value);
-                    }}
-                    placeholder="Other"
-                    placeholderTextColor={theme.muted}
-                    style={[
-                      styles.pendingUserInputOtherInput,
-                      !canRespondToPendingUserInput && styles.buttonDisabled,
-                    ]}
-                    value={otherDraft}
-                  />
-                </View>
-              );
-            })}
+                );
+              })}
+            </ScrollView>
             <View style={styles.inlineButtonRow}>
               <ActionButton
                 compact
@@ -4269,18 +4406,28 @@ function AppShellContent() {
         ) : null}
 
         <View style={styles.composerInputRow}>
-          <TextInput
-            multiline
-            onChangeText={updateDraft}
-            onFocus={() => {
-              requestAnimationFrame(scrollConversationToEnd);
-            }}
-            placeholder="Type the next instruction..."
-            placeholderTextColor={TERMINAL_MUTED}
-            style={[styles.composerInput, styles.composerInputField]}
-            textAlignVertical="top"
-            value={draft}
-          />
+          <View
+            style={[
+              styles.composerInputFrame,
+              styles.composerInputField,
+              { height: composerInputHeight },
+            ]}
+          >
+            <TextInput
+              multiline
+              onChangeText={updateDraft}
+              onContentSizeChange={updateComposerInputHeight}
+              onFocus={() => {
+                requestAnimationFrame(scrollConversationToEnd);
+              }}
+              placeholder="Type the next instruction..."
+              placeholderTextColor={TERMINAL_MUTED}
+              scrollEnabled={composerInputHeight >= COMPOSER_INPUT_MAX_HEIGHT}
+              style={styles.composerInput}
+              textAlignVertical="top"
+              value={draft}
+            />
+          </View>
           <View style={styles.composerInlineSendAction}>
             <ActionButton
               disabled={!canSend}
@@ -6692,6 +6839,13 @@ function createStyles(theme: AppTheme) {
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 10,
     },
+    pendingUserInputQuestionsScroll: {
+      flexGrow: 0,
+    },
+    pendingUserInputQuestionsScrollContent: {
+      gap: 8,
+      paddingRight: 2,
+    },
     pendingUserInputOptionList: {
       gap: 5,
     },
@@ -6732,6 +6886,38 @@ function createStyles(theme: AppTheme) {
       minHeight: 34,
       paddingHorizontal: 8,
       paddingVertical: 6,
+    },
+    proposedPlanCard: {
+      backgroundColor: TERMINAL_PANEL_ALT,
+      borderLeftColor: TERMINAL_ACCENT,
+      borderLeftWidth: 2,
+      gap: 8,
+      marginVertical: 2,
+      paddingHorizontal: 8,
+      paddingVertical: 8,
+    },
+    proposedPlanHeader: {
+      alignItems: "center",
+      flexDirection: "row",
+      justifyContent: "space-between",
+    },
+    proposedPlanHeaderCopy: {
+      flex: 1,
+      gap: 2,
+    },
+    proposedPlanEyebrow: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 1,
+      textTransform: "uppercase",
+    },
+    proposedPlanStatus: {
+      color: TERMINAL_MUTED,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 10,
+      lineHeight: 14,
     },
     waitingIndicator: {
       alignSelf: "flex-start",
@@ -6841,12 +7027,18 @@ function createStyles(theme: AppTheme) {
     composerInput: {
       backgroundColor: "transparent",
       color: TERMINAL_TEXT,
+      flex: 1,
       fontFamily: TERMINAL_FONT_FAMILY,
-      fontSize: 12,
-      minHeight: 48,
-      paddingHorizontal: 2,
-      paddingTop: 4,
-      paddingBottom: 6,
+      fontSize: COMPOSER_INPUT_FONT_SIZE,
+      lineHeight: COMPOSER_INPUT_LINE_HEIGHT,
+      paddingHorizontal: 0,
+      paddingVertical: 0,
+    },
+    composerInputFrame: {
+      minHeight: COMPOSER_INPUT_MIN_HEIGHT,
+      paddingHorizontal: COMPOSER_INPUT_PADDING_HORIZONTAL,
+      paddingTop: COMPOSER_INPUT_PADDING_TOP,
+      paddingBottom: COMPOSER_INPUT_PADDING_BOTTOM,
     },
     composerInputRow: {
       alignItems: "flex-start",
