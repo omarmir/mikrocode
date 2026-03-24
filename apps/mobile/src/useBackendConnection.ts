@@ -63,9 +63,16 @@ import {
   saveConnectionSettings,
   type ConnectionSettings,
 } from "./storage";
+import { reconcileReadModel } from "./state/readModelReconciler";
+import {
+  createSnapshotRefreshController,
+  type RefreshTrigger,
+} from "./state/snapshotRefreshController";
 
 const REQUEST_TIMEOUT_MS = 15_000;
-const SNAPSHOT_REFRESH_DEBOUNCE_MS = 250;
+const EVENT_REFRESH_WINDOW_MS = 180;
+const EVENT_REFRESH_MAX_WAIT_MS = 250;
+const DIAGNOSTIC_FLUSH_MS = 500;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
 
 interface PendingRequest {
@@ -190,7 +197,6 @@ export function useBackendConnection() {
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRequestsRef = useRef<Map<string, PendingRequest>>(new Map());
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const socketListenerCleanupRef = useRef<(() => void) | null>(null);
   const reconnectAttemptRef = useRef(0);
   const refreshInFlightRef = useRef(false);
@@ -198,6 +204,11 @@ export function useBackendConnection() {
   const shouldStayConnectedRef = useRef(false);
   const autoConnectBootstrappedRef = useRef(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const eventRefreshControllerRef = useRef<ReturnType<
+    typeof createSnapshotRefreshController
+  > | null>(null);
+  const lastObservedPushSequenceRef = useRef<number | null>(null);
+  const pushSequenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -231,11 +242,35 @@ export function useBackendConnection() {
     }
   });
 
-  const clearRefreshTimer = useStableEvent(() => {
-    if (refreshTimerRef.current) {
-      clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = null;
+  const clearPushSequenceTimer = useStableEvent(() => {
+    if (pushSequenceTimerRef.current) {
+      clearTimeout(pushSequenceTimerRef.current);
+      pushSequenceTimerRef.current = null;
     }
+  });
+
+  const flushLastPushSequence = useStableEvent(() => {
+    clearPushSequenceTimer();
+    setLastPushSequence((current) =>
+      current === lastObservedPushSequenceRef.current
+        ? current
+        : lastObservedPushSequenceRef.current,
+    );
+  });
+
+  const schedulePushSequenceFlush = useStableEvent((immediate = false) => {
+    if (immediate) {
+      flushLastPushSequence();
+      return;
+    }
+
+    if (pushSequenceTimerRef.current) {
+      return;
+    }
+
+    pushSequenceTimerRef.current = setTimeout(() => {
+      flushLastPushSequence();
+    }, DIAGNOSTIC_FLUSH_MS);
   });
 
   const rejectPendingRequests = useStableEvent((message: string) => {
@@ -248,10 +283,13 @@ export function useBackendConnection() {
 
   const disconnectSocket = useStableEvent(() => {
     clearReconnectTimer();
-    clearRefreshTimer();
+    eventRefreshControllerRef.current?.cancel();
+    clearPushSequenceTimer();
     rejectPendingRequests("The socket disconnected.");
     setPendingServerResponses({});
     setServerNotifications([]);
+    lastObservedPushSequenceRef.current = null;
+    setLastPushSequence(null);
 
     const currentSocket = socketRef.current;
     socketRef.current = null;
@@ -293,7 +331,13 @@ export function useBackendConnection() {
     },
   );
 
-  const refreshSnapshot = useStableEvent(async () => {
+  const commitSnapshot = useStableEvent((nextSnapshot: OrchestrationReadModel) => {
+    startTransition(() => {
+      setSnapshot((current) => reconcileReadModel(current, nextSnapshot));
+    });
+  });
+
+  const refreshSnapshot = useStableEvent(async (_trigger: RefreshTrigger = "manual") => {
     if (!isSocketOpen(socketRef.current)) {
       return;
     }
@@ -313,9 +357,7 @@ export function useBackendConnection() {
           MOBILE_WS_METHODS.getSnapshot,
           {},
         );
-        startTransition(() => {
-          setSnapshot(nextSnapshot);
-        });
+        commitSnapshot(nextSnapshot);
       } while (refreshQueuedRef.current);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Failed to refresh the snapshot.");
@@ -333,9 +375,19 @@ export function useBackendConnection() {
 
     startTransition(() => {
       setServerConfig(nextConfig);
-      setSnapshot(nextSnapshot);
+      setSnapshot((current) => reconcileReadModel(current, nextSnapshot));
     });
   });
+
+  if (eventRefreshControllerRef.current === null) {
+    eventRefreshControllerRef.current = createSnapshotRefreshController({
+      eventWindowMs: EVENT_REFRESH_WINDOW_MS,
+      eventMaxWaitMs: EVENT_REFRESH_MAX_WAIT_MS,
+      onFlush: (trigger) => {
+        void refreshSnapshot(trigger);
+      },
+    });
+  }
 
   const scheduleReconnect = useStableEvent(() => {
     if (!shouldStayConnectedRef.current) {
@@ -353,19 +405,18 @@ export function useBackendConnection() {
     }, delay);
   });
 
-  const scheduleSnapshotRefresh = useStableEvent(() => {
-    clearRefreshTimer();
-    refreshTimerRef.current = setTimeout(() => {
-      void refreshSnapshot();
-    }, SNAPSHOT_REFRESH_DEBOUNCE_MS);
+  const scheduleSnapshotRefresh = useStableEvent((trigger: RefreshTrigger = "event") => {
+    eventRefreshControllerRef.current?.request(trigger);
   });
 
   const handleIncomingPush = useStableEvent((message: PushMessage) => {
-    setLastPushSequence(message.sequence);
+    lastObservedPushSequenceRef.current = message.sequence;
+    schedulePushSequenceFlush();
 
     if (message.channel === MOBILE_WS_CHANNELS.serverWelcome) {
       setWelcome(message.data as WsWelcomePayload);
       setErrorMessage(null);
+      schedulePushSequenceFlush(true);
       void fetchBootstrapState();
       return;
     }
@@ -409,7 +460,7 @@ export function useBackendConnection() {
     }
 
     if (message.channel === MOBILE_WS_CHANNELS.domainEvent) {
-      scheduleSnapshotRefresh();
+      scheduleSnapshotRefresh("event");
     }
   });
 
@@ -446,7 +497,7 @@ export function useBackendConnection() {
 
   const connect = useStableEvent(async () => {
     clearReconnectTimer();
-    clearRefreshTimer();
+    eventRefreshControllerRef.current?.cancel();
     rejectPendingRequests("Connection restarted.");
     shouldStayConnectedRef.current = true;
 
@@ -546,9 +597,11 @@ export function useBackendConnection() {
   useEffect(() => {
     return () => {
       shouldStayConnectedRef.current = false;
+      eventRefreshControllerRef.current?.cancel();
+      clearPushSequenceTimer();
       disconnectSocket();
     };
-  }, [disconnectSocket]);
+  }, [clearPushSequenceTimer, disconnectSocket]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextAppState) => {

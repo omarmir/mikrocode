@@ -34,6 +34,7 @@ import {
   AppState,
   Animated,
   Easing,
+  FlatList,
   Image,
   Keyboard,
   KeyboardAvoidingView,
@@ -89,6 +90,10 @@ import type {
 
 import { MOBILE_DEFAULT_MODEL } from "./defaults";
 import { buildAttachmentUrl, createClientId } from "./protocol";
+import {
+  buildConversationRenderItems,
+  type ConversationRenderItem,
+} from "./conversation/conversationRenderItems";
 import {
   loadThreadTurnPreferences,
   saveThreadTurnPreferences,
@@ -2242,7 +2247,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     attachment: ChatAttachment | DraftImageAttachment,
   ) => string | null;
   readonly revealedMessageId: string | null;
-  readonly scrollRef: RefObject<ScrollView | null>;
+  readonly scrollRef: RefObject<FlatList<ConversationRenderItem> | null>;
   readonly selectedThreadConversationId: string | null;
   readonly showWaitingIndicator: boolean;
   readonly timelineEntries: ReadonlyArray<ThreadTimelineEntry>;
@@ -2250,16 +2255,175 @@ const ConversationTimeline = memo(function ConversationTimeline({
   readonly waitingIndicatorMotion: Animated.Value;
 }) {
   const { styles, theme } = useAppThemeContext();
+  const renderItems = useMemo(
+    () =>
+      buildConversationRenderItems({
+        timelineEntries,
+        pinnedQueuedMessages,
+        showWaitingIndicator,
+      }),
+    [pinnedQueuedMessages, showWaitingIndicator, timelineEntries],
+  );
+
+  const renderConversationItem = useCallback(
+    ({ item }: { readonly item: ConversationRenderItem }) => {
+      if (item.kind === "empty") {
+        return (
+          <View style={styles.emptyConversation}>
+            <Text style={styles.sectionTitle}>No output yet</Text>
+            <Text style={styles.helperText}>Send the first instruction to open the stream.</Text>
+          </View>
+        );
+      }
+
+      if (item.kind === "waiting") {
+        return (
+          <Animated.View
+            style={[
+              styles.waitingIndicator,
+              {
+                opacity: waitingIndicatorMotion.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.55, 1],
+                }),
+                transform: [
+                  {
+                    translateY: waitingIndicatorMotion.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, -4],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <Text style={styles.waitingIndicatorText}>{waitingIndicatorLabel}</Text>
+          </Animated.View>
+        );
+      }
+
+      if (item.kind === "queued") {
+        return (
+          <ConversationMessageCard
+            badgeLabel={item.badgeLabel}
+            expandable={false}
+            expanded
+            highlighted={false}
+            isMetaRevealed={revealedMessageId === item.message.id}
+            message={item.message}
+            messageMetaOpacity={messageMetaOpacity}
+            onLongPress={requestHandlePinnedQueuedMessageLongPress}
+            onRevealMeta={requestRevealMessageMeta}
+            onToggleExpanded={requestToggleAssistantMessageExpanded}
+            resolveAttachmentImageUrl={resolveAttachmentImageUrl}
+          />
+        );
+      }
+
+      const entry = item.entry;
+      if (entry.kind === "activityGroup") {
+        return (
+          <TimelineActivityGroup
+            activities={entry.activities}
+            expanded={entry.id in expandedActivityGroupIds}
+            onToggle={() => {
+              requestToggleActivityGroup(entry.id);
+            }}
+          />
+        );
+      }
+
+      if (entry.kind === "diff") {
+        const hydratedDiff =
+          selectedThreadConversationId === null
+            ? null
+            : (hydratedTurnDiffs[threadDiffCacheKey(selectedThreadConversationId, entry.turnId)] ??
+              null);
+
+        return (
+          <ThreadDiffCard
+            entry={entry}
+            expanded={entry.id in expandedDiffIds}
+            expandedFileIds={expandedDiffFileIds[entry.id] ?? EMPTY_EXPANDED_DIFF_FILE_IDS}
+            hydratedDiff={hydratedDiff}
+            onExpandFile={(fileId) => {
+              requestExpandDiffFile(entry.id, fileId);
+            }}
+            onToggle={() => {
+              requestToggleDiffEntry(entry);
+            }}
+          />
+        );
+      }
+
+      if (entry.kind === "proposedPlan") {
+        return <ProposedPlanCard proposedPlan={entry.proposedPlan} />;
+      }
+
+      const highlighted =
+        entry.message.role === "assistant" && entry.message.id === highlightedAssistantMessageId;
+      const expandable = shouldCollapseAssistantMessage({
+        highlighted,
+        message: entry.message,
+      });
+
+      return (
+        <ConversationMessageCard
+          badgeLabel={null}
+          expandable={expandable}
+          expanded={!expandable || expandedAssistantMessageIds[entry.message.id] === true}
+          highlighted={highlighted}
+          isMetaRevealed={revealedMessageId === entry.message.id}
+          message={entry.message}
+          messageMetaOpacity={messageMetaOpacity}
+          onLongPress={undefined}
+          onRevealMeta={requestRevealMessageMeta}
+          onToggleExpanded={requestToggleAssistantMessageExpanded}
+          resolveAttachmentImageUrl={resolveAttachmentImageUrl}
+        />
+      );
+    },
+    [
+      expandedActivityGroupIds,
+      expandedAssistantMessageIds,
+      expandedDiffFileIds,
+      expandedDiffIds,
+      highlightedAssistantMessageId,
+      hydratedTurnDiffs,
+      messageMetaOpacity,
+      requestExpandDiffFile,
+      requestHandlePinnedQueuedMessageLongPress,
+      requestRevealMessageMeta,
+      requestToggleActivityGroup,
+      requestToggleAssistantMessageExpanded,
+      requestToggleDiffEntry,
+      resolveAttachmentImageUrl,
+      revealedMessageId,
+      selectedThreadConversationId,
+      styles.emptyConversation,
+      styles.helperText,
+      styles.sectionTitle,
+      styles.waitingIndicator,
+      styles.waitingIndicatorText,
+      waitingIndicatorLabel,
+      waitingIndicatorMotion,
+    ],
+  );
 
   return (
-    <ScrollView
+    <FlatList
       ref={scrollRef}
       contentContainerStyle={styles.messagesScrollContent}
+      data={renderItems}
+      initialNumToRender={10}
       keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
       keyboardShouldPersistTaps="handled"
+      keyExtractor={(item) => item.id}
+      maxToRenderPerBatch={6}
       onContentSizeChange={handleConversationContentSizeChange}
       onLayout={handleConversationLayout}
       onScroll={handleConversationScroll}
+      removeClippedSubviews={Platform.OS === "android"}
       refreshControl={
         <RefreshControl
           onRefresh={handlePullToRefresh}
@@ -2267,125 +2431,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
           tintColor={theme.accent}
         />
       }
+      renderItem={renderConversationItem}
       scrollEventThrottle={16}
       style={styles.messagesScroll}
-    >
-      {timelineEntries.length > 0 || pinnedQueuedMessages.length > 0 ? (
-        timelineEntries.map((entry) => {
-          if (entry.kind === "activityGroup") {
-            return (
-              <TimelineActivityGroup
-                key={entry.id}
-                activities={entry.activities}
-                expanded={entry.id in expandedActivityGroupIds}
-                onToggle={() => {
-                  requestToggleActivityGroup(entry.id);
-                }}
-              />
-            );
-          }
-
-          if (entry.kind === "diff") {
-            const hydratedDiff =
-              selectedThreadConversationId === null
-                ? null
-                : (hydratedTurnDiffs[
-                    threadDiffCacheKey(selectedThreadConversationId, entry.turnId)
-                  ] ?? null);
-
-            return (
-              <ThreadDiffCard
-                key={entry.id}
-                entry={entry}
-                expanded={entry.id in expandedDiffIds}
-                expandedFileIds={expandedDiffFileIds[entry.id] ?? EMPTY_EXPANDED_DIFF_FILE_IDS}
-                hydratedDiff={hydratedDiff}
-                onExpandFile={(fileId) => {
-                  requestExpandDiffFile(entry.id, fileId);
-                }}
-                onToggle={() => {
-                  requestToggleDiffEntry(entry);
-                }}
-              />
-            );
-          }
-
-          if (entry.kind === "proposedPlan") {
-            return <ProposedPlanCard key={entry.id} proposedPlan={entry.proposedPlan} />;
-          }
-          const highlighted =
-            entry.message.role === "assistant" &&
-            entry.message.id === highlightedAssistantMessageId;
-          const expandable = shouldCollapseAssistantMessage({
-            highlighted,
-            message: entry.message,
-          });
-
-          return (
-            <ConversationMessageCard
-              key={entry.id}
-              badgeLabel={null}
-              expandable={expandable}
-              expanded={!expandable || expandedAssistantMessageIds[entry.message.id] === true}
-              highlighted={highlighted}
-              isMetaRevealed={revealedMessageId === entry.message.id}
-              message={entry.message}
-              messageMetaOpacity={messageMetaOpacity}
-              onLongPress={undefined}
-              onRevealMeta={requestRevealMessageMeta}
-              onToggleExpanded={requestToggleAssistantMessageExpanded}
-              resolveAttachmentImageUrl={resolveAttachmentImageUrl}
-            />
-          );
-        })
-      ) : (
-        <View style={styles.emptyConversation}>
-          <Text style={styles.sectionTitle}>No output yet</Text>
-          <Text style={styles.helperText}>Send the first instruction to open the stream.</Text>
-        </View>
-      )}
-
-      {pinnedQueuedMessages.map((entry) => (
-        <ConversationMessageCard
-          key={entry.message.id}
-          badgeLabel={entry.badgeLabel}
-          expandable={false}
-          expanded
-          highlighted={false}
-          isMetaRevealed={revealedMessageId === entry.message.id}
-          message={entry.message}
-          messageMetaOpacity={messageMetaOpacity}
-          onLongPress={requestHandlePinnedQueuedMessageLongPress}
-          onRevealMeta={requestRevealMessageMeta}
-          onToggleExpanded={requestToggleAssistantMessageExpanded}
-          resolveAttachmentImageUrl={resolveAttachmentImageUrl}
-        />
-      ))}
-
-      {showWaitingIndicator ? (
-        <Animated.View
-          style={[
-            styles.waitingIndicator,
-            {
-              opacity: waitingIndicatorMotion.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0.55, 1],
-              }),
-              transform: [
-                {
-                  translateY: waitingIndicatorMotion.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0, -4],
-                  }),
-                },
-              ],
-            },
-          ]}
-        >
-          <Text style={styles.waitingIndicatorText}>{waitingIndicatorLabel}</Text>
-        </Animated.View>
-      ) : null}
-    </ScrollView>
+      updateCellsBatchingPeriod={40}
+      windowSize={7}
+    />
   );
 });
 
@@ -2549,7 +2600,7 @@ function AppShellContent() {
   const messageMetaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deviceNotificationChannelReadyRef = useRef(false);
-  const messagesScrollRef = useRef<ScrollView | null>(null);
+  const messagesScrollRef = useRef<FlatList<ConversationRenderItem> | null>(null);
   const processingServerNotificationRef = useRef(false);
   const directoryLoadSequenceRef = useRef(0);
   const waitingIndicatorMotion = useRef(new Animated.Value(0)).current;

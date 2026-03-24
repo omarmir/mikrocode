@@ -106,6 +106,8 @@ export const DEFAULT_APP_THEME_SETTINGS: AppThemeSettings = {
   accent: "green",
 };
 
+const themeCache = new Map<string, AppTheme>();
+
 function channelPair(hex: string, start: number) {
   return Number.parseInt(hex.slice(start, start + 2), 16);
 }
@@ -136,9 +138,15 @@ export function isAppThemeAccent(value: unknown): value is AppThemeAccent {
 }
 
 export function resolveAppTheme(settings: AppThemeSettings): AppTheme {
+  const cacheKey = `${settings.neutralBase}:${settings.accent}`;
+  const cached = themeCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const accent = FLEXOKI_DARK_ACCENTS[settings.accent];
-  return {
-    key: `${settings.neutralBase}:${settings.accent}`,
+  const theme = {
+    key: cacheKey,
     background: neutralAt(settings.neutralBase, 0),
     panel: neutralAt(settings.neutralBase, 1),
     panelAlt: neutralAt(settings.neutralBase, 2),
@@ -162,4 +170,6 @@ export function resolveAppTheme(settings: AppThemeSettings): AppTheme {
     assistantMessageBackground: neutralAt(settings.neutralBase, 1),
     assistantMessageBorder: neutralAt(settings.neutralBase, 4),
   };
+  themeCache.set(cacheKey, theme);
+  return theme;
 }
