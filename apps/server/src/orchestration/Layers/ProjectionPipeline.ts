@@ -636,6 +636,28 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           return;
         }
 
+        case "thread.queued-turn-removed": {
+          const existingRows = yield* projectionThreadMessageRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          const keptRows = existingRows.filter((row) => row.messageId !== event.payload.messageId);
+          if (keptRows.length === existingRows.length) {
+            return;
+          }
+
+          yield* projectionThreadMessageRepository.deleteByThreadId({
+            threadId: event.payload.threadId,
+          });
+          yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
+            concurrency: 1,
+          }).pipe(Effect.asVoid);
+          attachmentSideEffects.prunedThreadRelativePaths.set(
+            event.payload.threadId,
+            collectThreadAttachmentRelativePaths(event.payload.threadId, keptRows),
+          );
+          return;
+        }
+
         default:
           return;
       }
@@ -784,6 +806,13 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           });
           return;
         }
+
+        case "thread.queued-turn-removed":
+          yield* projectionTurnRepository.deletePendingTurnStartByMessageId({
+            threadId: event.payload.threadId,
+            messageId: event.payload.messageId,
+          });
+          return;
 
         case "thread.session-set": {
           const turnId = event.payload.session.activeTurnId;

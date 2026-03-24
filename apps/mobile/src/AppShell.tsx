@@ -20,6 +20,7 @@ import {
   createContext,
   isValidElement,
   memo,
+  type RefObject,
   type ReactNode,
   useCallback,
   useContext,
@@ -29,15 +30,14 @@ import {
   useState,
 } from "react";
 import {
+  Alert,
   AppState,
   Animated,
   Easing,
-  FlatList,
   Image,
   Keyboard,
   KeyboardAvoidingView,
   type LayoutChangeEvent,
-  type ListRenderItemInfo,
   PanResponder,
   Platform,
   Pressable,
@@ -65,6 +65,7 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import type {
+  ChatAttachment,
   ClaudeCodeEffort,
   CodexReasoningEffort,
   GitBranch,
@@ -84,7 +85,6 @@ import type {
   RuntimeMode,
   ServerConversationCapabilities,
   UserInputQuestion,
-  UploadChatAttachment,
 } from "@t3tools/contracts";
 
 import { MOBILE_DEFAULT_MODEL } from "./defaults";
@@ -139,9 +139,13 @@ const TERMINAL_FONT_FAMILY = Platform.select({
 });
 type ComposerPanelMode = "model" | "reasoning" | "git";
 type ThreadTurnPreference = StoredThreadTurnPreference;
-type DraftImageAttachment = UploadChatAttachment & {
-  readonly id: string;
+type DraftImageAttachment = ChatAttachment & {
   readonly previewUri: string;
+  readonly dataUrl?: string;
+};
+type PinnedQueuedMessage = {
+  readonly badgeLabel: string;
+  readonly message: OrchestrationMessage;
 };
 type FeatherIconName = ComponentProps<typeof Feather>["name"];
 
@@ -722,6 +726,50 @@ function normalizeImageAttachmentName(fileName: string | null | undefined) {
   return `${withoutExtension}.jpg`;
 }
 
+function formatQueuedBadgeLabel(position: number) {
+  return position === 1 ? "Queued next" : `Queued ${position}`;
+}
+
+function mergeDraftText(currentDraft: string, restoredText: string) {
+  if (!restoredText.trim()) {
+    return currentDraft;
+  }
+  if (!currentDraft.trim()) {
+    return restoredText;
+  }
+  return `${currentDraft.replace(/\s+$/, "")}\n\n${restoredText}`;
+}
+
+function mergeDraftAttachments(
+  currentAttachments: ReadonlyArray<DraftImageAttachment>,
+  restoredAttachments: ReadonlyArray<DraftImageAttachment>,
+) {
+  const nextAttachments = [...currentAttachments];
+  if (restoredAttachments.length === 0) {
+    return nextAttachments;
+  }
+
+  const attachmentIds = new Set(nextAttachments.map((attachment) => attachment.id));
+  for (const attachment of restoredAttachments) {
+    if (attachmentIds.has(attachment.id)) {
+      continue;
+    }
+    attachmentIds.add(attachment.id);
+    nextAttachments.push(attachment);
+  }
+  return nextAttachments;
+}
+
+function buildDraftImageAttachmentFromPersisted(
+  attachment: ChatAttachment,
+  previewUri: string,
+): DraftImageAttachment {
+  return {
+    ...attachment,
+    previewUri,
+  };
+}
+
 const GENERATED_THREAD_STAMP_PATTERN =
   /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{1,2}:\d{2}(?:\s?(?:AM|PM|A\.M\.|P\.M\.|a\.m\.|p\.m\.))?$/;
 
@@ -847,6 +895,8 @@ type HydratedTurnDiffState = {
 };
 
 const DIFF_FILE_LINE_LIMIT = 200;
+const ASSISTANT_MESSAGE_PREVIEW_LINE_LIMIT = 10;
+const ASSISTANT_MESSAGE_PREVIEW_CHAR_LIMIT = 480;
 const EMPTY_EXPANDED_DIFF_FILE_IDS: Readonly<Record<string, true>> = Object.freeze({});
 type MessageScrollMetrics = {
   contentHeight: number;
@@ -1041,6 +1091,40 @@ function summarizeThreadDiffPreview(entry: ThreadDiffEntry) {
   return null;
 }
 
+function shouldCollapseAssistantMessage(input: {
+  readonly highlighted: boolean;
+  readonly message: OrchestrationMessage;
+}) {
+  if (input.highlighted || input.message.role !== "assistant" || input.message.streaming) {
+    return false;
+  }
+
+  const text = input.message.text.trim();
+  if (!text) {
+    return false;
+  }
+
+  return (
+    text.length > ASSISTANT_MESSAGE_PREVIEW_CHAR_LIMIT ||
+    /(^|\n)\s*```/.test(text) ||
+    /(^|\n)\s{0,3}(?:[-*+]|\d+\.)\s/.test(text) ||
+    /(^|\n)\s{0,3}#{1,6}\s/.test(text) ||
+    /\|.+\|/.test(text)
+  );
+}
+
+function buildAssistantMessagePreview(value: string) {
+  const normalized = value.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  const lines = normalized.split("\n").slice(0, ASSISTANT_MESSAGE_PREVIEW_LINE_LIMIT).join("\n");
+  return lines.length > ASSISTANT_MESSAGE_PREVIEW_CHAR_LIMIT
+    ? `${lines.slice(0, ASSISTANT_MESSAGE_PREVIEW_CHAR_LIMIT - 3)}...`
+    : lines;
+}
+
 function threadDiffCacheKey(threadId: string, turnId: string) {
   return `${threadId}:${turnId}`;
 }
@@ -1208,20 +1292,22 @@ const ThreadDiffCard = memo(function ThreadDiffCard({
   const { styles, theme } = useAppThemeContext();
   const unifiedDiff = hydratedDiff?.result?.diff ?? entry.previewUnifiedDiff ?? "";
   const parsedFiles = useMemo<ReadonlyArray<ParsedUnifiedDiffFile>>(
-    () => parseUnifiedDiff(unifiedDiff),
-    [unifiedDiff],
+    () => (expanded ? parseUnifiedDiff(unifiedDiff) : []),
+    [expanded, unifiedDiff],
   );
   const summaryFiles = useMemo(
     () =>
       entry.files.length > 0
         ? entry.files
-        : parsedFiles.map((file) => ({
-            path: file.path,
-            kind: "modified",
-            additions: file.additions,
-            deletions: file.deletions,
-          })),
-    [entry.files, parsedFiles],
+        : expanded
+          ? parsedFiles.map((file) => ({
+              path: file.path,
+              kind: "modified",
+              additions: file.additions,
+              deletions: file.deletions,
+            }))
+          : [],
+    [entry.files, expanded, parsedFiles],
   );
   const preview = summarizeThreadDiffPreview(entry);
 
@@ -1938,24 +2024,38 @@ const ProposedPlanCard = memo(function ProposedPlanCard({
 });
 
 const ConversationMessageCard = memo(function ConversationMessageCard({
+  badgeLabel,
+  expandable,
   highlighted,
+  expanded,
   isMetaRevealed,
   message,
   messageMetaOpacity,
+  onLongPress,
   onRevealMeta,
-  queuedPosition,
+  onToggleExpanded,
   resolveAttachmentImageUrl,
 }: {
+  readonly badgeLabel: string | null;
+  readonly expandable: boolean;
   readonly highlighted: boolean;
+  readonly expanded: boolean;
   readonly isMetaRevealed: boolean;
   readonly message: OrchestrationMessage;
   readonly messageMetaOpacity: Animated.Value;
+  readonly onLongPress?: (messageId: string) => void;
   readonly onRevealMeta: (messageId: string) => void;
-  readonly queuedPosition: number | null;
-  readonly resolveAttachmentImageUrl: (attachmentId: string) => string | null;
+  readonly onToggleExpanded: (messageId: string) => void;
+  readonly resolveAttachmentImageUrl: (
+    attachment: ChatAttachment | DraftImageAttachment,
+  ) => string | null;
 }) {
   const { styles } = useAppThemeContext();
   const hasMessageText = message.text.length > 0;
+  const assistantPreviewText = useMemo(
+    () => (expandable && !expanded ? buildAssistantMessagePreview(message.text) : message.text),
+    [expandable, expanded, message.text],
+  );
   const messageAttachmentPreviews = useMemo(
     () =>
       (message.attachments ?? [])
@@ -1963,7 +2063,7 @@ const ConversationMessageCard = memo(function ConversationMessageCard({
         .map((attachment) => ({
           id: attachment.id,
           name: attachment.name,
-          uri: resolveAttachmentImageUrl(attachment.id),
+          uri: resolveAttachmentImageUrl(attachment),
         }))
         .filter(
           (
@@ -1979,6 +2079,14 @@ const ConversationMessageCard = memo(function ConversationMessageCard({
 
   return (
     <Pressable
+      delayLongPress={180}
+      onLongPress={
+        onLongPress
+          ? () => {
+              onLongPress(message.id);
+            }
+          : undefined
+      }
       onPress={() => {
         onRevealMeta(message.id);
       }}
@@ -1995,17 +2103,43 @@ const ConversationMessageCard = memo(function ConversationMessageCard({
         ]}
       >
         <View style={styles.messageBody}>
-          {queuedPosition !== null ? (
+          {badgeLabel ? (
             <View style={styles.messageQueuedBadge}>
-              <Text style={styles.messageQueuedBadgeText}>
-                {queuedPosition === 1 ? "Queued next" : `Queued ${queuedPosition}`}
-              </Text>
+              <Text style={styles.messageQueuedBadgeText}>{badgeLabel}</Text>
             </View>
           ) : null}
           {hasMessageText || message.streaming ? (
             hasMessageText ? (
               message.role === "assistant" ? (
-                <MarkdownMessage value={message.text} />
+                expandable && !expanded ? (
+                  <>
+                    <Text style={[styles.messageText, styles.messageTextAssistant]}>
+                      {assistantPreviewText}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        onToggleExpanded(message.id);
+                      }}
+                      style={styles.messageExpandButton}
+                    >
+                      <Text style={styles.messageExpandButtonLabel}>Expand</Text>
+                    </Pressable>
+                  </>
+                ) : (
+                  <>
+                    <MarkdownMessage value={message.text} />
+                    {expandable ? (
+                      <Pressable
+                        onPress={() => {
+                          onToggleExpanded(message.id);
+                        }}
+                        style={styles.messageExpandButton}
+                      >
+                        <Text style={styles.messageExpandButtonLabel}>Collapse</Text>
+                      </Pressable>
+                    ) : null}
+                  </>
+                )
               ) : (
                 <Text
                   style={[
@@ -2056,6 +2190,205 @@ const ConversationMessageCard = memo(function ConversationMessageCard({
   );
 });
 
+const ConversationTimeline = memo(function ConversationTimeline({
+  expandedAssistantMessageIds,
+  expandedActivityGroupIds,
+  expandedDiffFileIds,
+  expandedDiffIds,
+  handleConversationContentSizeChange,
+  handleConversationLayout,
+  handleConversationScroll,
+  handlePullToRefresh,
+  highlightedAssistantMessageId,
+  hydratedTurnDiffs,
+  isPullRefreshing,
+  messageMetaOpacity,
+  pinnedQueuedMessages,
+  requestExpandDiffFile,
+  requestHandlePinnedQueuedMessageLongPress,
+  requestRevealMessageMeta,
+  requestToggleAssistantMessageExpanded,
+  requestToggleActivityGroup,
+  requestToggleDiffEntry,
+  resolveAttachmentImageUrl,
+  revealedMessageId,
+  scrollRef,
+  selectedThreadConversationId,
+  showWaitingIndicator,
+  timelineEntries,
+  waitingIndicatorLabel,
+  waitingIndicatorMotion,
+}: {
+  readonly expandedAssistantMessageIds: Readonly<Record<string, true>>;
+  readonly expandedActivityGroupIds: Readonly<Record<string, true>>;
+  readonly expandedDiffFileIds: Readonly<Record<string, Readonly<Record<string, true>>>>;
+  readonly expandedDiffIds: Readonly<Record<string, true>>;
+  readonly handleConversationContentSizeChange: (width: number, height: number) => void;
+  readonly handleConversationLayout: (event: LayoutChangeEvent) => void;
+  readonly handleConversationScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
+  readonly handlePullToRefresh: () => void;
+  readonly highlightedAssistantMessageId: string | null;
+  readonly hydratedTurnDiffs: Readonly<Record<string, HydratedTurnDiffState>>;
+  readonly isPullRefreshing: boolean;
+  readonly messageMetaOpacity: Animated.Value;
+  readonly pinnedQueuedMessages: ReadonlyArray<PinnedQueuedMessage>;
+  readonly requestExpandDiffFile: (entryId: string, fileId: string) => void;
+  readonly requestHandlePinnedQueuedMessageLongPress: (messageId: string) => void;
+  readonly requestRevealMessageMeta: (messageId: string) => void;
+  readonly requestToggleAssistantMessageExpanded: (messageId: string) => void;
+  readonly requestToggleActivityGroup: (groupId: string) => void;
+  readonly requestToggleDiffEntry: (entry: ThreadDiffEntry) => void;
+  readonly resolveAttachmentImageUrl: (
+    attachment: ChatAttachment | DraftImageAttachment,
+  ) => string | null;
+  readonly revealedMessageId: string | null;
+  readonly scrollRef: RefObject<ScrollView | null>;
+  readonly selectedThreadConversationId: string | null;
+  readonly showWaitingIndicator: boolean;
+  readonly timelineEntries: ReadonlyArray<ThreadTimelineEntry>;
+  readonly waitingIndicatorLabel: string;
+  readonly waitingIndicatorMotion: Animated.Value;
+}) {
+  const { styles, theme } = useAppThemeContext();
+
+  return (
+    <ScrollView
+      ref={scrollRef}
+      contentContainerStyle={styles.messagesScrollContent}
+      keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+      keyboardShouldPersistTaps="handled"
+      onContentSizeChange={handleConversationContentSizeChange}
+      onLayout={handleConversationLayout}
+      onScroll={handleConversationScroll}
+      refreshControl={
+        <RefreshControl
+          onRefresh={handlePullToRefresh}
+          refreshing={isPullRefreshing}
+          tintColor={theme.accent}
+        />
+      }
+      scrollEventThrottle={16}
+      style={styles.messagesScroll}
+    >
+      {timelineEntries.length > 0 || pinnedQueuedMessages.length > 0 ? (
+        timelineEntries.map((entry) => {
+          if (entry.kind === "activityGroup") {
+            return (
+              <TimelineActivityGroup
+                key={entry.id}
+                activities={entry.activities}
+                expanded={entry.id in expandedActivityGroupIds}
+                onToggle={() => {
+                  requestToggleActivityGroup(entry.id);
+                }}
+              />
+            );
+          }
+
+          if (entry.kind === "diff") {
+            const hydratedDiff =
+              selectedThreadConversationId === null
+                ? null
+                : (hydratedTurnDiffs[
+                    threadDiffCacheKey(selectedThreadConversationId, entry.turnId)
+                  ] ?? null);
+
+            return (
+              <ThreadDiffCard
+                key={entry.id}
+                entry={entry}
+                expanded={entry.id in expandedDiffIds}
+                expandedFileIds={expandedDiffFileIds[entry.id] ?? EMPTY_EXPANDED_DIFF_FILE_IDS}
+                hydratedDiff={hydratedDiff}
+                onExpandFile={(fileId) => {
+                  requestExpandDiffFile(entry.id, fileId);
+                }}
+                onToggle={() => {
+                  requestToggleDiffEntry(entry);
+                }}
+              />
+            );
+          }
+
+          if (entry.kind === "proposedPlan") {
+            return <ProposedPlanCard key={entry.id} proposedPlan={entry.proposedPlan} />;
+          }
+          const highlighted =
+            entry.message.role === "assistant" &&
+            entry.message.id === highlightedAssistantMessageId;
+          const expandable = shouldCollapseAssistantMessage({
+            highlighted,
+            message: entry.message,
+          });
+
+          return (
+            <ConversationMessageCard
+              key={entry.id}
+              badgeLabel={null}
+              expandable={expandable}
+              expanded={!expandable || expandedAssistantMessageIds[entry.message.id] === true}
+              highlighted={highlighted}
+              isMetaRevealed={revealedMessageId === entry.message.id}
+              message={entry.message}
+              messageMetaOpacity={messageMetaOpacity}
+              onLongPress={undefined}
+              onRevealMeta={requestRevealMessageMeta}
+              onToggleExpanded={requestToggleAssistantMessageExpanded}
+              resolveAttachmentImageUrl={resolveAttachmentImageUrl}
+            />
+          );
+        })
+      ) : (
+        <View style={styles.emptyConversation}>
+          <Text style={styles.sectionTitle}>No output yet</Text>
+          <Text style={styles.helperText}>Send the first instruction to open the stream.</Text>
+        </View>
+      )}
+
+      {pinnedQueuedMessages.map((entry) => (
+        <ConversationMessageCard
+          key={entry.message.id}
+          badgeLabel={entry.badgeLabel}
+          expandable={false}
+          expanded
+          highlighted={false}
+          isMetaRevealed={revealedMessageId === entry.message.id}
+          message={entry.message}
+          messageMetaOpacity={messageMetaOpacity}
+          onLongPress={requestHandlePinnedQueuedMessageLongPress}
+          onRevealMeta={requestRevealMessageMeta}
+          onToggleExpanded={requestToggleAssistantMessageExpanded}
+          resolveAttachmentImageUrl={resolveAttachmentImageUrl}
+        />
+      ))}
+
+      {showWaitingIndicator ? (
+        <Animated.View
+          style={[
+            styles.waitingIndicator,
+            {
+              opacity: waitingIndicatorMotion.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0.55, 1],
+              }),
+              transform: [
+                {
+                  translateY: waitingIndicatorMotion.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0, -4],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          <Text style={styles.waitingIndicatorText}>{waitingIndicatorLabel}</Text>
+        </Animated.View>
+      ) : null}
+    </ScrollView>
+  );
+});
+
 function isThreadWaitingForResponse(
   thread: OrchestrationThread | null,
   hasPendingServerResponse: boolean,
@@ -2100,6 +2433,7 @@ function AppShellContent() {
     listDirectory,
     pendingServerResponseThreadIds,
     refreshSnapshot,
+    removeQueuedTurn,
     respondToApproval,
     respondToUserInput,
     resolvedWebSocketUrl,
@@ -2167,6 +2501,9 @@ function AppShellContent() {
   const [pendingUserInputOtherDrafts, setPendingUserInputOtherDrafts] =
     useState<PendingUserInputOtherState>({});
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const [expandedAssistantMessageIds, setExpandedAssistantMessageIds] = useState<
+    Record<string, true>
+  >({});
   const [expandedActivityGroupIds, setExpandedActivityGroupIds] = useState<Record<string, true>>(
     {},
   );
@@ -2212,7 +2549,7 @@ function AppShellContent() {
   const messageMetaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deviceNotificationChannelReadyRef = useRef(false);
-  const messagesScrollRef = useRef<FlatList<ThreadTimelineEntry> | null>(null);
+  const messagesScrollRef = useRef<ScrollView | null>(null);
   const processingServerNotificationRef = useRef(false);
   const directoryLoadSequenceRef = useRef(0);
   const waitingIndicatorMotion = useRef(new Animated.Value(0)).current;
@@ -2222,8 +2559,30 @@ function AppShellContent() {
     offsetY: 0,
   });
   const forceScrollToBottomRef = useRef(false);
+  const navBackdropOpacity = useMemo(
+    () =>
+      navTranslateX.interpolate({
+        inputRange: [-sidebarWidth, 0],
+        outputRange: [0, 1],
+        extrapolate: "clamp",
+      }),
+    [navTranslateX, sidebarWidth],
+  );
+  const settingsBackdropOpacity = useMemo(
+    () =>
+      settingsTranslateX.interpolate({
+        inputRange: [0, floatingPanelWidth],
+        outputRange: [1, 0],
+        extrapolate: "clamp",
+      }),
+    [floatingPanelWidth, settingsTranslateX],
+  );
 
   const allProjects = useMemo(() => sortProjects(snapshot?.projects ?? []), [snapshot?.projects]);
+  const pendingServerResponseThreadIdSet = useMemo(
+    () => new Set(pendingServerResponseThreadIds),
+    [pendingServerResponseThreadIds],
+  );
   const visibleProjectIds = useMemo(
     () => new Set(allProjects.map((project) => project.id)),
     [allProjects],
@@ -2257,28 +2616,49 @@ function AppShellContent() {
     () => sortMessages(selectedThread?.messages ?? []),
     [selectedThread?.messages],
   );
+  const serverQueuedMessageIds = useMemo(
+    () => new Set((selectedThread?.queuedTurns ?? []).map((queuedTurn) => queuedTurn.messageId)),
+    [selectedThread?.queuedTurns],
+  );
+  const timelineMessages = useMemo(
+    () => messages.filter((message) => !serverQueuedMessageIds.has(message.id)),
+    [messages, serverQueuedMessageIds],
+  );
   const threadDiffEntries = useMemo(() => buildThreadDiffEntries(selectedThread), [selectedThread]);
   const timelineEntries = useMemo(
     () =>
       buildThreadTimelineEntries({
-        messages,
+        messages: timelineMessages,
         activities: selectedThread?.activities ?? [],
         proposedPlans: selectedThread?.proposedPlans ?? [],
         diffs: threadDiffEntries,
       }),
-    [messages, selectedThread?.activities, selectedThread?.proposedPlans, threadDiffEntries],
+    [
+      timelineMessages,
+      selectedThread?.activities,
+      selectedThread?.proposedPlans,
+      threadDiffEntries,
+    ],
   );
-  const queuedPositionByMessageId = useMemo(() => {
-    const positions = new Map<string, number>();
-    for (const [index, queuedTurn] of (selectedThread?.queuedTurns ?? []).entries()) {
-      positions.set(queuedTurn.messageId, index + 1);
-    }
-    return positions;
-  }, [selectedThread?.queuedTurns]);
+  const pinnedQueuedMessages = useMemo(() => {
+    const messagesById = new Map(messages.map((message) => [message.id, message]));
+    return (selectedThread?.queuedTurns ?? []).flatMap((queuedTurn, index) => {
+      const message = messagesById.get(queuedTurn.messageId);
+      if (!message) {
+        return [];
+      }
+      return [
+        {
+          badgeLabel: formatQueuedBadgeLabel(index + 1),
+          message,
+        } satisfies PinnedQueuedMessage,
+      ];
+    });
+  }, [messages, selectedThread?.queuedTurns]);
   const highlightedAssistantMessageId = useMemo(() => {
-    const latestMessage = messages[messages.length - 1];
+    const latestMessage = timelineMessages[timelineMessages.length - 1];
     return latestMessage?.role === "assistant" ? latestMessage.id : null;
-  }, [messages]);
+  }, [timelineMessages]);
   const pendingApprovalRequest = useMemo(
     () => findPendingApprovalRequest(selectedThread),
     [selectedThread],
@@ -2334,7 +2714,7 @@ function AppShellContent() {
     selectedThreadTurnPreference?.interactionMode ?? selectedThread?.interactionMode ?? "default";
   const selectedTurnDispatchMode = selectedThreadTurnPreference?.turnDispatchMode ?? "live";
   const selectedThreadHasPendingServerResponse =
-    selectedThread !== null && pendingServerResponseThreadIds.includes(selectedThread.id);
+    selectedThread !== null && pendingServerResponseThreadIdSet.has(selectedThread.id);
   const pendingUserInputRequest = useMemo(
     () => findPendingUserInputRequest(selectedThread),
     [selectedThread],
@@ -2404,6 +2784,18 @@ function AppShellContent() {
     setPushoverAppTokenDraft(serverConfig?.notifications.pushover.appToken ?? "");
     setPushoverUserKeyDraft(serverConfig?.notifications.pushover.userKey ?? "");
   }, [serverConfig?.notifications.pushover.appToken, serverConfig?.notifications.pushover.userKey]);
+
+  const showToast = useCallback((message: string) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToastMessage(message);
+    toastTimerRef.current = setTimeout(() => {
+      setToastMessage(null);
+      toastTimerRef.current = null;
+    }, 1800);
+  }, []);
 
   const ensureDeviceNotificationsReady = useCallback(
     async (promptForPermission: boolean) => {
@@ -2494,6 +2886,7 @@ function AppShellContent() {
     dismissServerNotification,
     ensureDeviceNotificationsReady,
     serverNotifications,
+    showToast,
   ]);
 
   useEffect(() => {
@@ -2532,6 +2925,7 @@ function AppShellContent() {
       clearTimeout(messageMetaTimerRef.current);
       messageMetaTimerRef.current = null;
     }
+    setExpandedAssistantMessageIds({});
     setExpandedActivityGroupIds({});
     setExpandedDiffIds({});
     setExpandedDiffFileIds({});
@@ -2704,7 +3098,12 @@ function AppShellContent() {
     }
 
     requestScrollConversationToEnd();
-  }, [requestScrollConversationToEnd, selectedThreadConversationId, timelineEntries.length]);
+  }, [
+    pinnedQueuedMessages.length,
+    requestScrollConversationToEnd,
+    selectedThreadConversationId,
+    timelineEntries.length,
+  ]);
 
   useEffect(() => {
     if (Platform.OS !== "android") {
@@ -2933,7 +3332,9 @@ function AppShellContent() {
     }));
   };
 
-  const buildDraftImageAttachment = (asset: ImagePicker.ImagePickerAsset) => {
+  const buildDraftImageAttachment = (
+    asset: ImagePicker.ImagePickerAsset,
+  ): DraftImageAttachment | null => {
     if (!asset.base64) {
       return null;
     }
@@ -3333,6 +3734,21 @@ function AppShellContent() {
     });
   }, []);
 
+  const toggleAssistantMessageExpanded = useCallback((messageId: string) => {
+    setExpandedAssistantMessageIds((current) => {
+      if (messageId in current) {
+        const next = { ...current };
+        delete next[messageId];
+        return next;
+      }
+
+      return {
+        ...current,
+        [messageId]: true,
+      };
+    });
+  }, []);
+
   const toggleDiffEntry = useCallback(
     (entry: ThreadDiffEntry) => {
       let nextExpanded = false;
@@ -3375,17 +3791,130 @@ function AppShellContent() {
     });
   }, []);
 
-  const showToast = (message: string) => {
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-      toastTimerRef.current = null;
-    }
-    setToastMessage(message);
-    toastTimerRef.current = setTimeout(() => {
-      setToastMessage(null);
-      toastTimerRef.current = null;
-    }, 1800);
-  };
+  const buildQueuedMessageDraftAttachments = useCallback(
+    (message: OrchestrationMessage): DraftImageAttachment[] =>
+      (message.attachments ?? []).flatMap((attachment) => {
+        if (attachment.type !== "image") {
+          return [];
+        }
+
+        try {
+          return [
+            buildDraftImageAttachmentFromPersisted(
+              attachment,
+              buildAttachmentUrl(
+                connectionSettings.serverUrl,
+                connectionSettings.authToken,
+                attachment.id,
+              ),
+            ),
+          ];
+        } catch {
+          return [];
+        }
+      }),
+    [connectionSettings.authToken, connectionSettings.serverUrl],
+  );
+
+  const restoreQueuedTurnToDraft = useCallback(
+    (message: OrchestrationMessage) => {
+      if (!selectedThread) {
+        return;
+      }
+
+      void (async () => {
+        try {
+          await removeQueuedTurn({
+            threadId: selectedThread.id,
+            messageId: message.id,
+          });
+          const restoredAttachments = buildQueuedMessageDraftAttachments(message);
+          setThreadDrafts((current) => ({
+            ...current,
+            [selectedThread.id]: mergeDraftText(current[selectedThread.id] ?? "", message.text),
+          }));
+          setThreadDraftAttachments((current) => ({
+            ...current,
+            [selectedThread.id]: mergeDraftAttachments(
+              current[selectedThread.id] ?? [],
+              restoredAttachments,
+            ),
+          }));
+          if (selectedThreadConversationId === selectedThread.id) {
+            setComposerInputHeight(COMPOSER_INPUT_MIN_HEIGHT);
+            requestScrollConversationToEnd();
+          }
+          showToast("Queued message restored");
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Failed to restore queued message");
+        }
+      })();
+    },
+    [
+      buildQueuedMessageDraftAttachments,
+      removeQueuedTurn,
+      requestScrollConversationToEnd,
+      selectedThread,
+      selectedThreadConversationId,
+      showToast,
+    ],
+  );
+
+  const cancelQueuedTurn = useCallback(
+    (message: OrchestrationMessage) => {
+      if (!selectedThread) {
+        return;
+      }
+
+      void (async () => {
+        try {
+          await removeQueuedTurn({
+            threadId: selectedThread.id,
+            messageId: message.id,
+          });
+          showToast("Queued message canceled");
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Failed to cancel queued message");
+        }
+      })();
+    },
+    [removeQueuedTurn, selectedThread, showToast],
+  );
+
+  const handlePinnedQueuedMessageLongPress = useCallback(
+    (messageId: string) => {
+      if (!selectedThread) {
+        return;
+      }
+
+      const queuedMessage =
+        pinnedQueuedMessages.find((entry) => entry.message.id === messageId)?.message ?? null;
+      if (!queuedMessage) {
+        return;
+      }
+
+      Alert.alert("Queued turn", "Choose what to do with this queued message.", [
+        {
+          text: "Bring back to input",
+          onPress: () => {
+            restoreQueuedTurnToDraft(queuedMessage);
+          },
+        },
+        {
+          text: "Cancel queued turn",
+          style: "destructive",
+          onPress: () => {
+            cancelQueuedTurn(queuedMessage);
+          },
+        },
+        {
+          text: "Never mind",
+          style: "cancel",
+        },
+      ]);
+    },
+    [cancelQueuedTurn, pinnedQueuedMessages, restoreQueuedTurnToDraft, selectedThread],
+  );
 
   const resolveNotificationSettingsInput = (input?: {
     readonly enabled?: boolean;
@@ -3870,13 +4399,39 @@ function AppShellContent() {
     }
 
     const threadId = selectedThread.id;
-    const attachmentsToSend = draftAttachments.map((attachment) => ({
-      type: attachment.type,
-      name: attachment.name,
-      mimeType: attachment.mimeType,
-      sizeBytes: attachment.sizeBytes,
-      dataUrl: attachment.dataUrl,
-    }));
+    const messageId = createClientId("message");
+    const modelOptions =
+      selectedConversationProvider === "codex" && selectedThreadTurnPreference?.reasoningEffort
+        ? {
+            codex: {
+              reasoningEffort: selectedThreadTurnPreference.reasoningEffort as CodexReasoningEffort,
+            },
+          }
+        : selectedConversationProvider === "claudeAgent" &&
+            selectedThreadTurnPreference?.reasoningEffort
+          ? {
+              claudeAgent: {
+                effort: selectedThreadTurnPreference.reasoningEffort as ClaudeCodeEffort,
+              },
+            }
+          : undefined;
+    const attachmentsToSend = draftAttachments.map((attachment) =>
+      attachment.dataUrl
+        ? {
+            type: attachment.type,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            dataUrl: attachment.dataUrl,
+          }
+        : {
+            type: attachment.type,
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+          },
+    );
     const willQueueTurn = selectedTurnDispatchMode === "queue" && sessionBusy;
     const willInterruptTurn = selectedTurnDispatchMode === "live" && sessionBusy;
     const draftToRestore = draft;
@@ -3889,6 +4444,7 @@ function AppShellContent() {
     try {
       await sendTurn({
         threadId,
+        messageId,
         text: trimmed,
         attachments: attachmentsToSend,
         runtimeMode: selectedRuntimeMode,
@@ -3896,22 +4452,7 @@ function AppShellContent() {
         model: selectedThread.model,
         turnDispatchMode: selectedTurnDispatchMode,
         assistantDeliveryMode: "streaming",
-        modelOptions:
-          selectedConversationProvider === "codex" && selectedThreadTurnPreference?.reasoningEffort
-            ? {
-                codex: {
-                  reasoningEffort:
-                    selectedThreadTurnPreference.reasoningEffort as CodexReasoningEffort,
-                },
-              }
-            : selectedConversationProvider === "claudeAgent" &&
-                selectedThreadTurnPreference?.reasoningEffort
-              ? {
-                  claudeAgent: {
-                    effort: selectedThreadTurnPreference.reasoningEffort as ClaudeCodeEffort,
-                  },
-                }
-              : undefined,
+        ...(modelOptions ? { modelOptions } : {}),
       });
       if (willQueueTurn) {
         showToast("Queued for next turn");
@@ -3944,12 +4485,16 @@ function AppShellContent() {
   };
 
   const resolveAttachmentImageUrl = useCallback(
-    (attachmentId: string) => {
+    (attachment: ChatAttachment | DraftImageAttachment) => {
+      if ("previewUri" in attachment && typeof attachment.previewUri === "string") {
+        return attachment.previewUri;
+      }
+
       try {
         return buildAttachmentUrl(
           connectionSettings.serverUrl,
           connectionSettings.authToken,
-          attachmentId,
+          attachment.id,
         );
       } catch {
         return null;
@@ -4007,121 +4552,6 @@ function AppShellContent() {
   const handleRefreshConversation = useCallback(() => {
     void handlePullToRefresh();
   }, [handlePullToRefresh]);
-  const conversationKeyExtractor = useCallback((entry: ThreadTimelineEntry) => entry.id, []);
-  const conversationEmptyState = useMemo(
-    () => (
-      <View style={styles.emptyConversation}>
-        <Text style={styles.sectionTitle}>No output yet</Text>
-        <Text style={styles.helperText}>Send the first instruction to open the stream.</Text>
-      </View>
-    ),
-    [styles],
-  );
-  const conversationFooter = useMemo(() => {
-    if (!showWaitingIndicator) {
-      return null;
-    }
-
-    return (
-      <Animated.View
-        style={[
-          styles.waitingIndicator,
-          {
-            opacity: waitingIndicatorMotion.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0.55, 1],
-            }),
-            transform: [
-              {
-                translateY: waitingIndicatorMotion.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [0, -4],
-                }),
-              },
-            ],
-          },
-        ]}
-      >
-        <Text style={styles.waitingIndicatorText}>{waitingIndicatorLabel}</Text>
-      </Animated.View>
-    );
-  }, [showWaitingIndicator, styles, waitingIndicatorLabel, waitingIndicatorMotion]);
-  const renderConversationItem = useCallback(
-    ({ item }: ListRenderItemInfo<ThreadTimelineEntry>) => {
-      if (item.kind === "activityGroup") {
-        return (
-          <TimelineActivityGroup
-            activities={item.activities}
-            expanded={item.id in expandedActivityGroupIds}
-            onToggle={() => {
-              toggleActivityGroup(item.id);
-            }}
-          />
-        );
-      }
-
-      if (item.kind === "diff") {
-        const hydratedDiff =
-          selectedThreadConversationId === null
-            ? null
-            : (hydratedTurnDiffs[threadDiffCacheKey(selectedThreadConversationId, item.turnId)] ??
-              null);
-        return (
-          <ThreadDiffCard
-            entry={item}
-            expanded={item.id in expandedDiffIds}
-            expandedFileIds={expandedDiffFileIds[item.id] ?? EMPTY_EXPANDED_DIFF_FILE_IDS}
-            hydratedDiff={hydratedDiff}
-            onExpandFile={(fileId) => {
-              expandDiffFile(item.id, fileId);
-            }}
-            onToggle={() => {
-              toggleDiffEntry(item);
-            }}
-          />
-        );
-      }
-
-      if (item.kind === "proposedPlan") {
-        return <ProposedPlanCard proposedPlan={item.proposedPlan} />;
-      }
-
-      const queuedPosition =
-        item.message.role === "user"
-          ? (queuedPositionByMessageId.get(item.message.id) ?? null)
-          : null;
-
-      return (
-        <ConversationMessageCard
-          highlighted={
-            item.message.role === "assistant" && item.message.id === highlightedAssistantMessageId
-          }
-          isMetaRevealed={revealedMessageId === item.message.id}
-          message={item.message}
-          messageMetaOpacity={messageMetaOpacity}
-          onRevealMeta={handleRevealMessageMeta}
-          queuedPosition={queuedPosition}
-          resolveAttachmentImageUrl={resolveAttachmentImageUrl}
-        />
-      );
-    },
-    [
-      expandedActivityGroupIds,
-      expandedDiffIds,
-      expandedDiffFileIds,
-      expandDiffFile,
-      handleRevealMessageMeta,
-      highlightedAssistantMessageId,
-      hydratedTurnDiffs,
-      messageMetaOpacity,
-      queuedPositionByMessageId,
-      resolveAttachmentImageUrl,
-      revealedMessageId,
-      selectedThreadConversationId,
-      toggleActivityGroup,
-      toggleDiffEntry,
-    ],
-  );
 
   const renderSidebar = () => (
     <View style={styles.sidebarRoot}>
@@ -4580,28 +5010,34 @@ function AppShellContent() {
         </View>
       </View>
 
-      <FlatList
-        ref={messagesScrollRef}
-        contentContainerStyle={styles.messagesScrollContent}
-        data={timelineEntries}
-        initialNumToRender={12}
-        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
-        keyboardShouldPersistTaps="handled"
-        keyExtractor={conversationKeyExtractor}
-        ListEmptyComponent={conversationEmptyState}
-        ListFooterComponent={conversationFooter}
-        maxToRenderPerBatch={10}
-        onContentSizeChange={handleConversationContentSizeChange}
-        onLayout={handleConversationLayout}
-        onRefresh={handleRefreshConversation}
-        onScroll={handleConversationScroll}
-        removeClippedSubviews={Platform.OS === "android"}
-        renderItem={renderConversationItem}
-        refreshing={isPullRefreshing}
-        scrollEventThrottle={16}
-        style={styles.messagesScroll}
-        updateCellsBatchingPeriod={32}
-        windowSize={7}
+      <ConversationTimeline
+        expandedActivityGroupIds={expandedActivityGroupIds}
+        expandedAssistantMessageIds={expandedAssistantMessageIds}
+        expandedDiffFileIds={expandedDiffFileIds}
+        expandedDiffIds={expandedDiffIds}
+        handleConversationContentSizeChange={handleConversationContentSizeChange}
+        handleConversationLayout={handleConversationLayout}
+        handleConversationScroll={handleConversationScroll}
+        handlePullToRefresh={handleRefreshConversation}
+        highlightedAssistantMessageId={highlightedAssistantMessageId}
+        hydratedTurnDiffs={hydratedTurnDiffs}
+        isPullRefreshing={isPullRefreshing}
+        messageMetaOpacity={messageMetaOpacity}
+        pinnedQueuedMessages={pinnedQueuedMessages}
+        requestExpandDiffFile={expandDiffFile}
+        requestHandlePinnedQueuedMessageLongPress={handlePinnedQueuedMessageLongPress}
+        requestRevealMessageMeta={handleRevealMessageMeta}
+        requestToggleActivityGroup={toggleActivityGroup}
+        requestToggleAssistantMessageExpanded={toggleAssistantMessageExpanded}
+        requestToggleDiffEntry={toggleDiffEntry}
+        resolveAttachmentImageUrl={resolveAttachmentImageUrl}
+        revealedMessageId={revealedMessageId}
+        scrollRef={messagesScrollRef}
+        selectedThreadConversationId={selectedThreadConversationId}
+        showWaitingIndicator={showWaitingIndicator}
+        timelineEntries={timelineEntries}
+        waitingIndicatorLabel={waitingIndicatorLabel}
+        waitingIndicatorMotion={waitingIndicatorMotion}
       />
 
       <View
@@ -5848,41 +6284,43 @@ function AppShellContent() {
 
             {!sidebarPersistent && navMenuOpen ? (
               <View pointerEvents="box-none" style={styles.overlayRoot}>
-                <View style={styles.overlayRow}>
-                  <Animated.View
-                    style={[
-                      styles.overlayPanelLeft,
-                      {
-                        width: sidebarWidth,
-                        transform: [{ translateX: navTranslateX }],
-                      },
-                    ]}
-                    {...navPanelPanResponder.panHandlers}
-                  >
-                    {renderSidebar()}
-                  </Animated.View>
-                  <Pressable onPress={closeNavMenu} style={styles.overlayBackdrop} />
-                </View>
+                <Animated.View style={[styles.overlayBackdrop, { opacity: navBackdropOpacity }]}>
+                  <Pressable onPress={closeNavMenu} style={styles.overlayBackdropPressable} />
+                </Animated.View>
+                <Animated.View
+                  style={[
+                    styles.overlayPanelLeft,
+                    {
+                      width: sidebarWidth,
+                      transform: [{ translateX: navTranslateX }],
+                    },
+                  ]}
+                  {...navPanelPanResponder.panHandlers}
+                >
+                  {renderSidebar()}
+                </Animated.View>
               </View>
             ) : null}
 
             {settingsOpen ? (
               <View pointerEvents="box-none" style={styles.overlayRoot}>
-                <View style={styles.overlayRow}>
-                  <Pressable onPress={closeSettingsPanel} style={styles.overlayBackdrop} />
-                  <Animated.View
-                    style={[
-                      styles.overlayPanelRight,
-                      {
-                        width: floatingPanelWidth,
-                        transform: [{ translateX: settingsTranslateX }],
-                      },
-                    ]}
-                    {...settingsPanelPanResponder.panHandlers}
-                  >
-                    {renderSettingsPanel()}
-                  </Animated.View>
-                </View>
+                <Animated.View
+                  style={[styles.overlayBackdrop, { opacity: settingsBackdropOpacity }]}
+                >
+                  <Pressable onPress={closeSettingsPanel} style={styles.overlayBackdropPressable} />
+                </Animated.View>
+                <Animated.View
+                  style={[
+                    styles.overlayPanelRight,
+                    {
+                      width: floatingPanelWidth,
+                      transform: [{ translateX: settingsTranslateX }],
+                    },
+                  ]}
+                  {...settingsPanelPanResponder.panHandlers}
+                >
+                  {renderSettingsPanel()}
+                </Animated.View>
               </View>
             ) : null}
 
@@ -6791,6 +7229,22 @@ function createStyles(theme: AppTheme) {
     },
     messageTextAssistant: {
       color: TERMINAL_TEXT,
+    },
+    messageExpandButton: {
+      alignSelf: "flex-start",
+      borderColor: TERMINAL_BORDER,
+      borderWidth: 1,
+      marginTop: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+    },
+    messageExpandButtonLabel: {
+      color: TERMINAL_ACCENT,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 11,
+      fontWeight: "700",
+      letterSpacing: 0.4,
+      textTransform: "uppercase",
     },
     messageMarkdownRoot: {
       gap: 6,
@@ -7732,13 +8186,12 @@ function createStyles(theme: AppTheme) {
     overlayRoot: {
       ...StyleSheet.absoluteFillObject,
     },
-    overlayRow: {
-      flex: 1,
-      flexDirection: "row",
-    },
     overlayBackdrop: {
+      ...StyleSheet.absoluteFillObject,
       backgroundColor: TERMINAL_OVERLAY,
-      flex: 1,
+    },
+    overlayBackdropPressable: {
+      ...StyleSheet.absoluteFillObject,
     },
     modalBackdrop: {
       ...StyleSheet.absoluteFillObject,
@@ -7751,12 +8204,20 @@ function createStyles(theme: AppTheme) {
       padding: 12,
     },
     overlayPanelLeft: {
+      bottom: 0,
       borderRightColor: TERMINAL_BORDER,
       borderRightWidth: 1,
+      left: 0,
+      position: "absolute",
+      top: 0,
     },
     overlayPanelRight: {
+      bottom: 0,
       borderLeftColor: TERMINAL_BORDER,
       borderLeftWidth: 1,
+      position: "absolute",
+      right: 0,
+      top: 0,
     },
     floatingPanelSafeArea: {
       backgroundColor: TERMINAL_PANEL,

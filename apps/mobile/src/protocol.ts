@@ -1,5 +1,6 @@
 import type {
   AssistantDeliveryMode,
+  ChatAttachment,
   GitListBranchesResult,
   GitPrepareMainlineMergeResult,
   GitStackedAction,
@@ -85,10 +86,13 @@ export interface CreateProjectInput {
   readonly defaultModel?: string;
 }
 
+export type SendTurnAttachment = UploadChatAttachment | ChatAttachment;
+
 export interface SendTurnInput {
   readonly threadId: string;
+  readonly messageId?: string;
   readonly text: string;
-  readonly attachments?: ReadonlyArray<UploadChatAttachment>;
+  readonly attachments?: ReadonlyArray<SendTurnAttachment>;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly model: string;
@@ -101,6 +105,11 @@ export interface SendTurnInput {
 export interface InterruptTurnInput {
   readonly threadId: string;
   readonly turnId?: string;
+}
+
+export interface RemoveQueuedTurnInput {
+  readonly threadId: string;
+  readonly messageId: string;
 }
 
 export interface StopSessionInput {

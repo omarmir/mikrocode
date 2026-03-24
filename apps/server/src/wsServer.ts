@@ -9,6 +9,7 @@ import http from "node:http";
 import type { Duplex } from "node:stream";
 
 import {
+  type ChatAttachment,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   type ClientOrchestrationCommand,
@@ -756,6 +757,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       input.command.message.attachments,
       (attachment) =>
         Effect.gen(function* () {
+          if (!("dataUrl" in attachment) || typeof attachment.dataUrl !== "string") {
+            return attachment as ChatAttachment;
+          }
+
           const parsed = parseBase64DataUrl(attachment.dataUrl);
           if (!parsed || !parsed.mimeType.startsWith("image/")) {
             return yield* new RouteRequestError({

@@ -47,6 +47,7 @@ import {
   type InterruptTurnInput,
   type ListDirectoryInput,
   type PushMessage,
+  type RemoveQueuedTurnInput,
   type RpcResponse,
   type SendTurnInput,
   type SendTestNotificationInput,
@@ -704,7 +705,7 @@ export function useBackendConnection() {
             type: "thread.turn.start",
             threadId: input.threadId,
             message: {
-              messageId: createClientId("message"),
+              messageId: input.messageId ?? createClientId("message"),
               role: "user" as const,
               text: input.text,
               attachments: [...(input.attachments ?? [])],
@@ -771,6 +772,18 @@ export function useBackendConnection() {
       );
     },
   );
+
+  const removeQueuedTurn = useStableEvent(async (input: RemoveQueuedTurnInput) => {
+    await runBusyCommand("Updating queued turn", () =>
+      dispatchCommand(
+        withCommandMeta({
+          type: "thread.queued-turn.remove",
+          threadId: input.threadId,
+          messageId: input.messageId,
+        }),
+      ),
+    );
+  });
 
   const updateThreadBranch = useStableEvent(async (input: { threadId: string; branch: string }) => {
     await runBusyCommand("Updating branch", () =>
@@ -1103,6 +1116,7 @@ export function useBackendConnection() {
     dismissServerNotification: (notificationId: string) =>
       dismissServerNotification(notificationId),
     interruptTurn: (input: InterruptTurnInput) => interruptTurn(input),
+    removeQueuedTurn: (input: RemoveQueuedTurnInput) => removeQueuedTurn(input),
     stopSession: (input: StopSessionInput) => stopSession(input),
     respondToApproval: (input: ApprovalResponseInput) => respondToApproval(input),
     respondToUserInput: (input: UserInputResponseInput) => respondToUserInput(input),

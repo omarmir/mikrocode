@@ -19,6 +19,7 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadQueuedTurnRemovedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadTurnStartRequestedPayload,
@@ -444,6 +445,31 @@ export function projectEvent(
               interactionMode: payload.interactionMode,
               createdAt: payload.createdAt,
             }),
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.queued-turn-removed":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadQueuedTurnRemovedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            queuedTurns: thread.queuedTurns.filter(
+              (entry) => entry.messageId !== payload.messageId,
+            ),
+            messages: thread.messages.filter((entry) => entry.id !== payload.messageId),
             updatedAt: event.occurredAt,
           }),
         };
