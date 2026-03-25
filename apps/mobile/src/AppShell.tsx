@@ -3,28 +3,9 @@ import { Feather } from "@expo/vector-icons";
 import Constants from "expo-constants";
 import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
-import Prism from "prismjs";
-import "prismjs/components/prism-bash";
-import "prismjs/components/prism-clike";
-import "prismjs/components/prism-diff";
-import "prismjs/components/prism-javascript";
-import "prismjs/components/prism-json";
-import "prismjs/components/prism-jsx";
-import "prismjs/components/prism-markdown";
-import "prismjs/components/prism-markup";
-import "prismjs/components/prism-tsx";
-import "prismjs/components/prism-typescript";
-import "prismjs/components/prism-yaml";
 import {
   type ComponentProps,
-  cloneElement,
-  createContext,
-  isValidElement,
-  memo,
-  type RefObject,
-  type ReactNode,
   useCallback,
-  useContext,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -36,12 +17,10 @@ import {
   AppState,
   Animated,
   Easing,
-  FlatList,
   Image,
   Keyboard,
   KeyboardAvoidingView,
   type LayoutChangeEvent,
-  PanResponder,
   Platform,
   Pressable,
   RefreshControl,
@@ -53,12 +32,10 @@ import {
   Text,
   TextInput,
   type TextInputContentSizeChangeEventData,
-  type TextStyle,
   View,
-  type ViewStyle,
   useWindowDimensions,
 } from "react-native";
-import { Renderer, type MarkedStyles, useMarkdown } from "react-native-marked";
+import type { FlashListRef } from "@shopify/flash-list";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -74,9 +51,7 @@ import type {
   GitBranch,
   GitListBranchesResult,
   GitStatusResult,
-  OrchestrationGetTurnDiffResult,
   OrchestrationMessage,
-  OrchestrationProposedPlan,
   OrchestrationProject,
   OrchestrationThread,
   OrchestrationThreadActivity,
@@ -91,12 +66,19 @@ import type {
 } from "@t3tools/contracts";
 
 import { MOBILE_DEFAULT_MODEL } from "./defaults";
+import { AppThemeProvider, useAppThemeContext } from "./appThemeContext";
 import { getMessageCopyValue, type MessageCopyFormat } from "./messageCopy";
 import { buildAttachmentUrl, createClientId } from "./protocol";
-import {
-  buildConversationRenderItems,
-  type ConversationRenderItem,
+import type {
+  ConversationRenderItem,
+  PinnedConversationMessage,
 } from "./conversation/conversationRenderItems";
+import { ConversationTimeline } from "./conversation/ConversationTimeline";
+import { createConversationAutoScrollController } from "./conversation/autoScrollController";
+import type { HydratedTurnDiffState } from "./conversation/renderUtils";
+import { threadDiffCacheKey } from "./conversation/renderUtils";
+import { SlidingPanel } from "./gestures/SlidingPanel";
+import { SwipeDismissRow } from "./gestures/SwipeDismissRow";
 import {
   loadThreadTurnPreferences,
   saveThreadTurnPreferences,
@@ -115,17 +97,13 @@ import {
 import {
   buildThreadDiffEntries,
   buildThreadTimelineEntries,
-  parseUnifiedDiff,
-  type ParsedUnifiedDiffFile,
   type ThreadDiffEntry,
-  type ThreadTimelineEntry,
 } from "./threadDiffs";
 import { useBackendConnection } from "./useBackendConnection";
 
 const FALLBACK_MODEL = MOBILE_DEFAULT_MODEL;
 const PERSISTENT_SIDEBAR_BREAKPOINT = 920;
 const WIDE_LAYOUT_BREAKPOINT = 1180;
-const PANEL_ANIMATION_DURATION_MS = 220;
 const DEVICE_NOTIFICATION_CHANNEL_ID = "turn-updates";
 const ANDROID_EXPO_GO_APP_OWNERSHIP = "expo";
 const COMPOSER_INPUT_FONT_SIZE = 12;
@@ -151,98 +129,7 @@ type DraftImageAttachment = ChatAttachment & {
   readonly previewUri: string;
   readonly dataUrl?: string;
 };
-type PinnedQueuedMessage = {
-  readonly badgeLabel: string;
-  readonly message: OrchestrationMessage;
-};
 type FeatherIconName = ComponentProps<typeof Feather>["name"];
-
-type MessageMarkdownStyles = {
-  readonly root: ViewStyle;
-  readonly text: TextStyle;
-  readonly paragraph: ViewStyle;
-  readonly link: TextStyle;
-  readonly blockquote: ViewStyle;
-  readonly heading: TextStyle;
-  readonly codespan: TextStyle;
-  readonly codeBlock: ViewStyle;
-  readonly codeHeader: ViewStyle;
-  readonly codeHeaderLabel: TextStyle;
-  readonly codeScroll: ViewStyle;
-  readonly codeScrollContent: ViewStyle;
-  readonly codeContent: ViewStyle;
-  readonly codeText: TextStyle;
-  readonly codeComment: TextStyle;
-  readonly codeKeyword: TextStyle;
-  readonly codeString: TextStyle;
-  readonly codeNumber: TextStyle;
-  readonly codeFunction: TextStyle;
-  readonly codeOperator: TextStyle;
-  readonly codePunctuation: TextStyle;
-  readonly codeType: TextStyle;
-  readonly codeProperty: TextStyle;
-  readonly codeTag: TextStyle;
-  readonly codeAttrName: TextStyle;
-  readonly codeAttrValue: TextStyle;
-  readonly codeImportant: TextStyle;
-  readonly rule: ViewStyle;
-  readonly list: ViewStyle;
-  readonly listItem: TextStyle;
-  readonly table: ViewStyle;
-  readonly tableRow: ViewStyle;
-  readonly tableCell: ViewStyle;
-  readonly strong: TextStyle;
-  readonly emphasis: TextStyle;
-  readonly strikethrough: TextStyle;
-};
-
-type MarkdownRenderElementProps = {
-  readonly children?: ReactNode;
-  readonly style?: unknown;
-};
-
-const PRISM_LANGUAGE_ALIASES: Record<string, string> = {
-  bash: "bash",
-  console: "bash",
-  cts: "typescript",
-  diff: "diff",
-  javascript: "javascript",
-  js: "javascript",
-  json: "json",
-  jsx: "jsx",
-  markdown: "markdown",
-  md: "markdown",
-  mts: "typescript",
-  patch: "diff",
-  sh: "bash",
-  shell: "bash",
-  text: "plain",
-  plaintext: "plain",
-  ts: "typescript",
-  tsx: "tsx",
-  txt: "plain",
-  typescript: "typescript",
-  yaml: "yaml",
-  yml: "yaml",
-  zsh: "bash",
-};
-
-function normalizeCodeLanguage(language?: string) {
-  const normalizedLanguage = language?.trim().toLowerCase() ?? "";
-  if (normalizedLanguage.length === 0) {
-    return null;
-  }
-  return PRISM_LANGUAGE_ALIASES[normalizedLanguage] ?? normalizedLanguage;
-}
-
-function getPrismGrammar(language?: string) {
-  const normalizedLanguage = normalizeCodeLanguage(language);
-  if (!normalizedLanguage || normalizedLanguage === "plain") {
-    return null;
-  }
-  const grammar = Prism.languages[normalizedLanguage];
-  return grammar ? { grammar, language: normalizedLanguage } : null;
-}
 
 function formatServerNotificationToast(notification: {
   readonly title: string;
@@ -262,316 +149,6 @@ function loadNotificationsModule() {
 
 async function copyTextToClipboard(text: string) {
   await Clipboard.setStringAsync(text);
-}
-
-function getCodeTokenStyles(
-  token: Prism.Token,
-  markdownStyles: MessageMarkdownStyles,
-): TextStyle[] | undefined {
-  const tokenNames = [
-    token.type,
-    ...(Array.isArray(token.alias) ? token.alias : token.alias ? [token.alias] : []),
-  ];
-  const resolvedStyles = tokenNames.flatMap((tokenName) => {
-    switch (tokenName) {
-      case "comment":
-      case "prolog":
-      case "doctype":
-      case "cdata":
-        return [markdownStyles.codeComment];
-      case "keyword":
-      case "atrule":
-      case "selector":
-      case "important":
-        return [markdownStyles.codeKeyword];
-      case "string":
-      case "char":
-      case "regex":
-        return [markdownStyles.codeString];
-      case "number":
-      case "boolean":
-      case "constant":
-        return [markdownStyles.codeNumber];
-      case "function":
-      case "function-variable":
-        return [markdownStyles.codeFunction];
-      case "operator":
-        return [markdownStyles.codeOperator];
-      case "punctuation":
-        return [markdownStyles.codePunctuation];
-      case "class-name":
-      case "builtin":
-      case "type":
-      case "namespace":
-        return [markdownStyles.codeType];
-      case "property":
-      case "parameter":
-        return [markdownStyles.codeProperty];
-      case "tag":
-        return [markdownStyles.codeTag];
-      case "attr-name":
-        return [markdownStyles.codeAttrName];
-      case "attr-value":
-        return [markdownStyles.codeAttrValue];
-      case "bold":
-        return [markdownStyles.codeImportant];
-      default:
-        return [];
-    }
-  });
-
-  return resolvedStyles.length > 0 ? resolvedStyles : undefined;
-}
-
-function renderHighlightedCodeTokens(
-  tokenStream: Prism.TokenStream,
-  markdownStyles: MessageMarkdownStyles,
-  keyPrefix: string,
-): ReactNode[] {
-  if (typeof tokenStream === "string") {
-    return [tokenStream];
-  }
-
-  if (Array.isArray(tokenStream)) {
-    return tokenStream.flatMap((token, index) =>
-      renderHighlightedCodeTokens(token, markdownStyles, `${keyPrefix}-${index}`),
-    );
-  }
-
-  return [
-    <Text key={keyPrefix} style={getCodeTokenStyles(tokenStream, markdownStyles)}>
-      {renderHighlightedCodeTokens(tokenStream.content, markdownStyles, `${keyPrefix}-content`)}
-    </Text>,
-  ];
-}
-
-function flattenReactNodes(children: ReactNode): ReactNode[] {
-  if (Array.isArray(children)) {
-    return children.flatMap((child) => flattenReactNodes(child));
-  }
-  if (children === null || children === undefined || typeof children === "boolean") {
-    return [];
-  }
-  return [children];
-}
-
-function getTextLeafValue(node: ReactNode): string | null {
-  if (typeof node === "string") {
-    return node;
-  }
-  if (!isValidElement<MarkdownRenderElementProps>(node) || node.type !== Text) {
-    return null;
-  }
-  const children = node.props.children;
-  if (typeof children === "string") {
-    return children;
-  }
-  if (Array.isArray(children) && children.length === 1 && typeof children[0] === "string") {
-    return children[0];
-  }
-  return null;
-}
-
-function getUnderlineMarker(node: ReactNode): "open" | "close" | null {
-  const value = getTextLeafValue(node);
-  if (value === "<u>") {
-    return "open";
-  }
-  if (value === "</u>") {
-    return "close";
-  }
-  return null;
-}
-
-function normalizeUnderlineNodes(
-  children: ReactNode,
-  underlineStyle: TextStyle,
-  keyPrefix: string,
-): ReactNode[] {
-  const flattenedChildren = flattenReactNodes(children);
-  const normalizedChildren: ReactNode[] = [];
-  let underlineBuffer: ReactNode[] | null = null;
-  let openMarkerNode: ReactNode | null = null;
-
-  flattenedChildren.forEach((child, index) => {
-    const underlineMarker = getUnderlineMarker(child);
-    const childKeyPrefix = `${keyPrefix}-${index}`;
-
-    if (underlineMarker === "open" && underlineBuffer === null) {
-      underlineBuffer = [];
-      openMarkerNode = child;
-      return;
-    }
-
-    if (underlineMarker === "close" && underlineBuffer !== null) {
-      normalizedChildren.push(
-        ...underlineBuffer.map((bufferedChild, bufferIndex) =>
-          applyUnderlineToNode(
-            bufferedChild,
-            underlineStyle,
-            `${childKeyPrefix}-underline-${bufferIndex}`,
-          ),
-        ),
-      );
-      underlineBuffer = null;
-      openMarkerNode = null;
-      return;
-    }
-
-    if (underlineBuffer !== null) {
-      underlineBuffer.push(child);
-      return;
-    }
-
-    normalizedChildren.push(normalizeMarkdownNode(child, underlineStyle, childKeyPrefix));
-  });
-
-  if (underlineBuffer !== null) {
-    const trailingUnderlineBuffer = underlineBuffer as ReactNode[];
-    if (openMarkerNode !== null) {
-      normalizedChildren.push(
-        normalizeMarkdownNode(openMarkerNode, underlineStyle, `${keyPrefix}-open`),
-      );
-    }
-    normalizedChildren.push(
-      ...trailingUnderlineBuffer.map((bufferedChild, bufferIndex) =>
-        normalizeMarkdownNode(
-          bufferedChild,
-          underlineStyle,
-          `${keyPrefix}-trailing-${bufferIndex}`,
-        ),
-      ),
-    );
-  }
-
-  return normalizedChildren;
-}
-
-function normalizeMarkdownNode(
-  node: ReactNode,
-  underlineStyle: TextStyle,
-  keyPrefix: string,
-): ReactNode {
-  if (node === null || node === undefined || typeof node === "boolean") {
-    return null;
-  }
-  if (Array.isArray(node)) {
-    return normalizeUnderlineNodes(node, underlineStyle, keyPrefix);
-  }
-  if (!isValidElement<MarkdownRenderElementProps>(node)) {
-    return node;
-  }
-
-  return cloneElement(
-    node,
-    {
-      key: node.key ?? keyPrefix,
-    },
-    normalizeUnderlineNodes(node.props.children, underlineStyle, `${keyPrefix}-children`),
-  );
-}
-
-function applyUnderlineToNode(
-  node: ReactNode,
-  underlineStyle: TextStyle,
-  keyPrefix: string,
-): ReactNode {
-  if (node === null || node === undefined || typeof node === "boolean") {
-    return null;
-  }
-  if (Array.isArray(node)) {
-    return normalizeUnderlineNodes(node, underlineStyle, keyPrefix).map((child, index) =>
-      applyUnderlineToNode(child, underlineStyle, `${keyPrefix}-${index}`),
-    );
-  }
-  if (typeof node === "string" || typeof node === "number") {
-    return (
-      <Text key={keyPrefix} style={underlineStyle}>
-        {node}
-      </Text>
-    );
-  }
-  if (!isValidElement<MarkdownRenderElementProps>(node)) {
-    return node;
-  }
-
-  const children = normalizeUnderlineNodes(
-    node.props.children,
-    underlineStyle,
-    `${keyPrefix}-children`,
-  );
-  if (node.type === Text) {
-    return cloneElement(
-      node,
-      {
-        key: node.key ?? keyPrefix,
-        style: node.props.style ? [node.props.style, underlineStyle] : underlineStyle,
-      },
-      children,
-    );
-  }
-
-  return cloneElement(
-    node,
-    {
-      key: node.key ?? keyPrefix,
-    },
-    children.map((child, index) =>
-      applyUnderlineToNode(child, underlineStyle, `${keyPrefix}-${index}`),
-    ),
-  );
-}
-
-class ChatMarkdownRenderer extends Renderer {
-  constructor(private readonly markdownStyles: MessageMarkdownStyles) {
-    super();
-  }
-
-  override code(
-    text: string,
-    language?: string,
-    _containerStyle?: ViewStyle,
-    _textStyle?: TextStyle,
-  ): ReactNode {
-    const normalizedLanguage = language?.trim();
-    const trimmedText = text.replace(/[\r\n]+$/u, "");
-    const prismGrammar = getPrismGrammar(normalizedLanguage);
-    const highlightedContent = prismGrammar
-      ? renderHighlightedCodeTokens(
-          Prism.tokenize(trimmedText, prismGrammar.grammar),
-          this.markdownStyles,
-          `${this.getKey()}-code`,
-        )
-      : trimmedText;
-
-    return (
-      <View key={this.getKey()} style={this.markdownStyles.codeBlock}>
-        {normalizedLanguage ? (
-          <View style={this.markdownStyles.codeHeader}>
-            <Text style={this.markdownStyles.codeHeaderLabel}>{normalizedLanguage}</Text>
-          </View>
-        ) : null}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={this.markdownStyles.codeScroll}
-          contentContainerStyle={this.markdownStyles.codeScrollContent}
-        >
-          <View style={this.markdownStyles.codeContent}>
-            <Text style={this.markdownStyles.codeText}>{highlightedContent}</Text>
-          </View>
-        </ScrollView>
-      </View>
-    );
-  }
-
-  override codespan(text: string, styles?: TextStyle): ReactNode {
-    return (
-      <Text key={this.getKey()} style={[styles, this.markdownStyles.codespan]}>
-        {text}
-      </Text>
-    );
-  }
 }
 
 function formatProviderLabel(provider: "codex" | "claudeAgent") {
@@ -656,6 +233,12 @@ function formatModelSwitchBehavior(
 function sortReadonlyArray<T>(items: ReadonlyArray<T>, compare: (left: T, right: T) => number) {
   // oxlint-disable-next-line unicorn/no-array-sort
   return [...items].sort(compare);
+}
+
+function reverseReadonlyArray<T>(items: ReadonlyArray<T>) {
+  // Hermes compatibility: avoid toReversed().
+  // oxlint-disable-next-line unicorn/no-array-reverse
+  return [...items].reverse();
 }
 
 function sortProjects(projects: ReadonlyArray<OrchestrationProject>) {
@@ -897,22 +480,6 @@ type PendingUserInputRequest = {
 
 type PendingUserInputSelectionState = Record<string, Record<string, string | string[]>>;
 type PendingUserInputOtherState = Record<string, Record<string, string>>;
-type HydratedTurnDiffState = {
-  readonly status: "idle" | "loading" | "ready" | "error";
-  readonly updatedAt: string | null;
-  readonly result: OrchestrationGetTurnDiffResult | null;
-  readonly errorMessage: string | null;
-};
-
-const DIFF_FILE_LINE_LIMIT = 200;
-const ASSISTANT_MESSAGE_PREVIEW_LINE_LIMIT = 10;
-const ASSISTANT_MESSAGE_PREVIEW_CHAR_LIMIT = 480;
-const EMPTY_EXPANDED_DIFF_FILE_IDS: Readonly<Record<string, true>> = Object.freeze({});
-type MessageScrollMetrics = {
-  contentHeight: number;
-  viewportHeight: number;
-  offsetY: number;
-};
 
 function readPayloadBoolean(payload: unknown, key: string) {
   const record = asRecord(payload);
@@ -970,550 +537,6 @@ function readPayloadQuestions(payload: unknown): ReadonlyArray<UserInputQuestion
   });
 }
 
-function formatProposedPlanStatus(proposedPlan: OrchestrationProposedPlan) {
-  if (proposedPlan.implementedAt) {
-    return `Implemented ${formatTimestamp(proposedPlan.implementedAt)}`;
-  }
-  return "Ready to implement";
-}
-
-function summarizePreviewText(value: string, limit = 140) {
-  const firstNonEmptyLine = value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.length > 0);
-  if (!firstNonEmptyLine) {
-    return null;
-  }
-  const compact = firstNonEmptyLine.replace(/\s+/g, " ");
-  return compact.length > limit ? `${compact.slice(0, limit - 3)}...` : compact;
-}
-
-function readPlanStepLines(payload: unknown) {
-  const payloadRecord = asRecord(payload);
-  const plan = Array.isArray(payloadRecord?.plan) ? payloadRecord.plan : [];
-  return plan.flatMap((entry) => {
-    const stepRecord = asRecord(entry);
-    const step =
-      typeof stepRecord?.step === "string" && stepRecord.step.trim()
-        ? stepRecord.step.trim()
-        : null;
-    if (!step) {
-      return [];
-    }
-
-    const status =
-      typeof stepRecord?.status === "string" && stepRecord.status.trim()
-        ? stepRecord.status.trim()
-        : "pending";
-    const statusLabel =
-      status === "inProgress" || status === "in_progress"
-        ? "in progress"
-        : status === "completed"
-          ? "completed"
-          : "pending";
-    return [`[${statusLabel}] ${step}`];
-  });
-}
-
-function activityPreviewText(activity: OrchestrationThreadActivity) {
-  const delta = readPayloadString(activity.payload, "delta");
-  if (delta) {
-    return summarizePreviewText(delta);
-  }
-
-  const detail =
-    readPayloadString(activity.payload, "detail") ??
-    readPayloadString(activity.payload, "message") ??
-    readPayloadString(activity.payload, "explanation");
-  if (detail) {
-    return summarizePreviewText(detail);
-  }
-
-  if (activity.kind === "turn.plan.updated") {
-    return summarizePreviewText(readPlanStepLines(activity.payload).join(" / "));
-  }
-
-  return null;
-}
-
-function activityGroupTitle(activities: ReadonlyArray<OrchestrationThreadActivity>) {
-  const lastActivity = activities[activities.length - 1];
-  if (!lastActivity) {
-    return "Runtime updates";
-  }
-  return activities.length === 1 ? lastActivity.summary : `${activities.length} runtime updates`;
-}
-
-function activityGroupPreview(activities: ReadonlyArray<OrchestrationThreadActivity>) {
-  for (const activity of activities.toReversed()) {
-    const preview = activityPreviewText(activity);
-    if (preview) {
-      return preview;
-    }
-  }
-
-  const summaries = Array.from(new Set(activities.map((activity) => activity.summary)));
-  if (summaries.length === 0) {
-    return null;
-  }
-
-  return summaries.slice(Math.max(0, summaries.length - 3)).join(" / ");
-}
-
-function formatThreadDiffStateLabel(entry: ThreadDiffEntry) {
-  switch (entry.state) {
-    case "streaming":
-      return "Streaming";
-    case "ready":
-      return "Ready";
-    case "error":
-      return "Error";
-    default:
-      return "Unavailable";
-  }
-}
-
-function formatThreadDiffStats(
-  files: ReadonlyArray<{
-    readonly additions: number;
-    readonly deletions: number;
-  }>,
-) {
-  const additions = files.reduce((total, file) => total + file.additions, 0);
-  const deletions = files.reduce((total, file) => total + file.deletions, 0);
-  const fileLabel = `${files.length} file${files.length === 1 ? "" : "s"}`;
-  return `${fileLabel} / +${additions} -${deletions}`;
-}
-
-function summarizeThreadDiffPreview(entry: ThreadDiffEntry) {
-  if (entry.files.length > 0) {
-    return entry.files
-      .slice(0, 3)
-      .map((file) => file.path)
-      .join(" / ");
-  }
-
-  if (entry.previewUnifiedDiff) {
-    return summarizePreviewText(entry.previewUnifiedDiff);
-  }
-
-  return null;
-}
-
-function shouldCollapseAssistantMessage(input: {
-  readonly highlighted: boolean;
-  readonly message: OrchestrationMessage;
-}) {
-  if (input.highlighted || input.message.role !== "assistant" || input.message.streaming) {
-    return false;
-  }
-
-  const text = input.message.text.trim();
-  if (!text) {
-    return false;
-  }
-
-  return (
-    text.length > ASSISTANT_MESSAGE_PREVIEW_CHAR_LIMIT ||
-    /(^|\n)\s*```/.test(text) ||
-    /(^|\n)\s{0,3}(?:[-*+]|\d+\.)\s/.test(text) ||
-    /(^|\n)\s{0,3}#{1,6}\s/.test(text) ||
-    /\|.+\|/.test(text)
-  );
-}
-
-function buildAssistantMessagePreview(value: string) {
-  const normalized = value.replace(/\r\n/g, "\n").trim();
-  if (!normalized) {
-    return "";
-  }
-
-  const lines = normalized.split("\n").slice(0, ASSISTANT_MESSAGE_PREVIEW_LINE_LIMIT).join("\n");
-  return lines.length > ASSISTANT_MESSAGE_PREVIEW_CHAR_LIMIT
-    ? `${lines.slice(0, ASSISTANT_MESSAGE_PREVIEW_CHAR_LIMIT - 3)}...`
-    : lines;
-}
-
-function threadDiffCacheKey(threadId: string, turnId: string) {
-  return `${threadId}:${turnId}`;
-}
-
-function activityIcon(activity: OrchestrationThreadActivity): FeatherIconName {
-  const streamKind = readPayloadString(activity.payload, "streamKind");
-  if (streamKind === "file_change_output") {
-    return "edit-3";
-  }
-  if (streamKind === "command_output") {
-    return "terminal";
-  }
-  if (streamKind === "reasoning_text" || streamKind === "reasoning_summary_text") {
-    return "cpu";
-  }
-  if (streamKind === "plan_text" || activity.kind === "turn.plan.updated") {
-    return "list";
-  }
-  if (activity.kind === "runtime.warning" || activity.kind === "runtime.error") {
-    return "alert-triangle";
-  }
-  if (activity.kind.startsWith("tool.")) {
-    return "tool";
-  }
-  if (activity.kind.startsWith("task.")) {
-    return "activity";
-  }
-  return "activity";
-}
-
-function activityEyebrow(activity: OrchestrationThreadActivity) {
-  const streamKind = readPayloadString(activity.payload, "streamKind");
-  switch (streamKind) {
-    case "file_change_output":
-      return "Edit";
-    case "command_output":
-      return "Command";
-    case "reasoning_text":
-      return "Reasoning";
-    case "reasoning_summary_text":
-      return "Summary";
-    case "plan_text":
-      return "Plan";
-    default:
-      break;
-  }
-
-  if (activity.kind.startsWith("tool.")) {
-    return "Tool";
-  }
-  if (activity.kind.startsWith("task.")) {
-    return "Task";
-  }
-  if (activity.kind === "runtime.warning") {
-    return "Warning";
-  }
-  if (activity.kind === "runtime.error") {
-    return "Error";
-  }
-  if (activity.kind === "turn.plan.updated") {
-    return "Plan";
-  }
-  return "Activity";
-}
-
-function activityBody(activity: OrchestrationThreadActivity): {
-  readonly kind: "code" | "text";
-  readonly language: string | null;
-  readonly value: string;
-} | null {
-  const streamKind = readPayloadString(activity.payload, "streamKind");
-  const delta = readPayloadString(activity.payload, "delta");
-  if (delta) {
-    return {
-      kind:
-        streamKind === "file_change_output" || streamKind === "command_output" ? "code" : "text",
-      language:
-        streamKind === "file_change_output"
-          ? "diff"
-          : streamKind === "command_output"
-            ? "bash"
-            : null,
-      value: delta,
-    };
-  }
-
-  if (activity.kind === "turn.plan.updated") {
-    const lines: string[] = [];
-    const explanation = readPayloadString(activity.payload, "explanation");
-    if (explanation) {
-      lines.push(explanation);
-    }
-
-    const planLines = readPlanStepLines(activity.payload);
-    if (planLines.length > 0) {
-      if (lines.length > 0) {
-        lines.push("");
-      }
-      lines.push(...planLines);
-    }
-
-    if (lines.length > 0) {
-      return {
-        kind: "text",
-        language: null,
-        value: lines.join("\n"),
-      };
-    }
-  }
-
-  const detail =
-    readPayloadString(activity.payload, "detail") ?? readPayloadString(activity.payload, "message");
-  if (!detail) {
-    return null;
-  }
-
-  return {
-    kind: "text",
-    language: null,
-    value: detail,
-  };
-}
-
-const TimelineCodeBlock = memo(function TimelineCodeBlock({
-  language,
-  value,
-}: {
-  readonly language: string | null;
-  readonly value: string;
-}) {
-  const { styles } = useAppThemeContext();
-  return (
-    <View style={styles.timelineActivityCodeBlock}>
-      <View style={styles.timelineActivityCodeHeader}>
-        <Text style={styles.timelineActivityCodeHeaderLabel}>{language ?? "text"}</Text>
-      </View>
-      <ScrollView
-        horizontal
-        style={styles.timelineActivityCodeScroll}
-        contentContainerStyle={styles.timelineActivityCodeScrollContent}
-      >
-        <Text selectable style={styles.timelineActivityCodeText}>
-          {value}
-        </Text>
-      </ScrollView>
-    </View>
-  );
-});
-
-const ThreadDiffCard = memo(function ThreadDiffCard({
-  entry,
-  expanded,
-  expandedFileIds,
-  hydratedDiff,
-  onExpandFile,
-  onToggle,
-}: {
-  readonly entry: ThreadDiffEntry;
-  readonly expanded: boolean;
-  readonly expandedFileIds: Readonly<Record<string, true>>;
-  readonly hydratedDiff: HydratedTurnDiffState | null;
-  readonly onExpandFile: (fileId: string) => void;
-  readonly onToggle: () => void;
-}) {
-  const { styles, theme } = useAppThemeContext();
-  const unifiedDiff = hydratedDiff?.result?.diff ?? entry.previewUnifiedDiff ?? "";
-  const parsedFiles = useMemo<ReadonlyArray<ParsedUnifiedDiffFile>>(
-    () => (expanded ? parseUnifiedDiff(unifiedDiff) : []),
-    [expanded, unifiedDiff],
-  );
-  const summaryFiles = useMemo(
-    () =>
-      entry.files.length > 0
-        ? entry.files
-        : expanded
-          ? parsedFiles.map((file) => ({
-              path: file.path,
-              kind: "modified",
-              additions: file.additions,
-              deletions: file.deletions,
-            }))
-          : [],
-    [entry.files, expanded, parsedFiles],
-  );
-  const preview = summarizeThreadDiffPreview(entry);
-
-  return (
-    <View style={styles.diffCard}>
-      <Pressable onPress={onToggle} style={styles.diffCardSummaryRow}>
-        <View style={styles.diffCardSummaryHeader}>
-          <Feather
-            color={theme.muted}
-            name={expanded ? "chevron-down" : "chevron-right"}
-            size={14}
-          />
-          <Feather color={theme.accent} name="edit-3" size={14} />
-          <Text style={styles.diffCardSummaryTitle}>
-            {summaryFiles.length > 0 ? formatThreadDiffStats(summaryFiles) : "Changes"}
-          </Text>
-        </View>
-        <Text style={styles.diffCardSummaryMeta}>{formatTimestamp(entry.updatedAt)}</Text>
-      </Pressable>
-      <View style={styles.diffCardStatusRow}>
-        <Text
-          style={[
-            styles.diffCardStatus,
-            entry.state === "streaming" && styles.diffCardStatusStreaming,
-            entry.state === "ready" && styles.diffCardStatusReady,
-            entry.state === "error" && styles.diffCardStatusError,
-            entry.state === "missing" && styles.diffCardStatusMissing,
-          ]}
-        >
-          {formatThreadDiffStateLabel(entry)}
-        </Text>
-        {entry.checkpointTurnCount !== null ? (
-          <Text style={styles.diffCardStatusMeta}>{`Turn ${entry.checkpointTurnCount}`}</Text>
-        ) : null}
-      </View>
-      {preview ? <Text style={styles.diffCardPreview}>{preview}</Text> : null}
-      {expanded ? (
-        <View style={styles.diffCardExpanded}>
-          {hydratedDiff?.status === "loading" ? (
-            <Text style={styles.diffCardHint}>Loading canonical diff...</Text>
-          ) : null}
-          {hydratedDiff?.status === "error" ? (
-            <Text style={styles.diffCardErrorText}>{hydratedDiff.errorMessage}</Text>
-          ) : null}
-          {entry.previewTruncated ? (
-            <Text style={styles.diffCardHint}>
-              Streaming preview was truncated. Expand after completion for the full patch.
-            </Text>
-          ) : null}
-          {parsedFiles.length > 0 ? (
-            parsedFiles.map((file) => {
-              const isExpanded = expandedFileIds[file.id] === true;
-              const visibleLines = isExpanded
-                ? file.lines
-                : file.lines.slice(0, DIFF_FILE_LINE_LIMIT);
-              return (
-                <View key={file.id} style={styles.diffFileBlock}>
-                  <View style={styles.diffFileHeader}>
-                    <Text numberOfLines={1} style={styles.diffFilePath}>
-                      {file.path}
-                    </Text>
-                    <Text
-                      style={styles.diffFileStats}
-                    >{`+${file.additions} -${file.deletions}`}</Text>
-                  </View>
-                  <ScrollView
-                    horizontal
-                    style={styles.diffFileScroll}
-                    contentContainerStyle={styles.diffFileScrollContent}
-                  >
-                    <View style={styles.diffFileLines}>
-                      {visibleLines.map((line) => (
-                        <View
-                          key={line.id}
-                          style={[
-                            styles.diffLineRow,
-                            line.kind === "hunk" && styles.diffLineRowHunk,
-                            line.kind === "addition" && styles.diffLineRowAddition,
-                            line.kind === "deletion" && styles.diffLineRowDeletion,
-                          ]}
-                        >
-                          <Text
-                            selectable
-                            style={[
-                              styles.diffLineText,
-                              line.kind === "hunk" && styles.diffLineTextHunk,
-                              line.kind === "addition" && styles.diffLineTextAddition,
-                              line.kind === "deletion" && styles.diffLineTextDeletion,
-                              line.kind === "meta" && styles.diffLineTextMeta,
-                            ]}
-                          >
-                            {line.text || " "}
-                          </Text>
-                        </View>
-                      ))}
-                    </View>
-                  </ScrollView>
-                  {file.lines.length > visibleLines.length ? (
-                    <Pressable
-                      onPress={() => {
-                        onExpandFile(file.id);
-                      }}
-                      style={styles.diffFileMoreButton}
-                    >
-                      <Text style={styles.diffFileMoreButtonLabel}>
-                        {`Show ${file.lines.length - visibleLines.length} more lines`}
-                      </Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              );
-            })
-          ) : unifiedDiff.trim().length > 0 ? (
-            <TimelineCodeBlock language="diff" value={unifiedDiff} />
-          ) : (
-            <Text style={styles.diffCardHint}>
-              {entry.state === "missing"
-                ? "No checkpoint-backed diff is available for this turn."
-                : "Waiting for file changes..."}
-            </Text>
-          )}
-        </View>
-      ) : null}
-    </View>
-  );
-});
-
-const TimelineActivityGroup = memo(function TimelineActivityGroup({
-  activities,
-  expanded,
-  onToggle,
-}: {
-  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
-  readonly expanded: boolean;
-  readonly onToggle: () => void;
-}) {
-  const { styles, theme } = useAppThemeContext();
-  const latestActivity = activities[activities.length - 1];
-  if (!latestActivity) {
-    return null;
-  }
-
-  const preview = activityGroupPreview(activities);
-  return (
-    <View style={styles.timelineActivityWrap}>
-      <Pressable onPress={onToggle} style={styles.timelineActivitySummaryRow}>
-        <View style={styles.timelineActivitySummaryHeader}>
-          <Feather
-            color={theme.muted}
-            name={expanded ? "chevron-down" : "chevron-right"}
-            size={14}
-          />
-          <Feather color={theme.accent} name={activityIcon(latestActivity)} size={14} />
-          <Text style={styles.timelineActivitySummaryTitle}>{activityGroupTitle(activities)}</Text>
-        </View>
-        <Text style={styles.timelineActivitySummaryMeta}>
-          {formatTimestamp(latestActivity.createdAt)}
-        </Text>
-      </Pressable>
-      {preview ? <Text style={styles.timelineActivitySummaryPreview}>{preview}</Text> : null}
-      {expanded ? (
-        <View style={styles.timelineActivityExpandedList}>
-          {activities.map((activity) => {
-            const body = activityBody(activity);
-            return (
-              <View key={activity.id} style={styles.timelineActivityExpandedItem}>
-                <View style={styles.timelineActivityExpandedHeader}>
-                  <Text style={styles.timelineActivityExpandedEyebrow}>
-                    {activityEyebrow(activity)}
-                  </Text>
-                  <Text style={styles.timelineActivityExpandedTimestamp}>
-                    {formatTimestamp(activity.createdAt)}
-                  </Text>
-                </View>
-                <Text style={styles.timelineActivityExpandedTitle}>{activity.summary}</Text>
-                {body ? (
-                  body.kind === "code" ? (
-                    <TimelineCodeBlock language={body.language} value={body.value} />
-                  ) : (
-                    <Text selectable style={styles.timelineActivityExpandedText}>
-                      {body.value}
-                    </Text>
-                  )
-                ) : null}
-                {readPayloadBoolean(activity.payload, "truncated") ? (
-                  <Text style={styles.timelineActivityExpandedHint}>Stored chunk truncated.</Text>
-                ) : null}
-              </View>
-            );
-          })}
-        </View>
-      ) : null}
-    </View>
-  );
-});
-
 function findPendingApprovalRequest(
   thread: OrchestrationThread | null,
 ): PendingApprovalRequest | null {
@@ -1523,7 +546,7 @@ function findPendingApprovalRequest(
 
   const resolvedRequestIds = new Set<string>();
 
-  for (const activity of sortActivities(thread.activities).toReversed()) {
+  for (const activity of reverseReadonlyArray(sortActivities(thread.activities))) {
     const requestId = readPayloadString(activity.payload, "requestId");
     if (!requestId) {
       continue;
@@ -1558,7 +581,7 @@ function findPendingUserInputRequest(
 
   const resolvedRequestIds = new Set<string>();
 
-  for (const activity of sortActivities(thread.activities).toReversed()) {
+  for (const activity of reverseReadonlyArray(sortActivities(thread.activities))) {
     const requestId = readPayloadString(activity.payload, "requestId");
     if (!requestId) {
       continue;
@@ -1593,7 +616,7 @@ function findLatestActiveTaskType(thread: OrchestrationThread | null): string | 
     return null;
   }
 
-  for (const activity of sortActivities(thread.activities).toReversed()) {
+  for (const activity of reverseReadonlyArray(sortActivities(thread.activities))) {
     if (activity.turnId !== activeTurnId || activity.kind !== "task.started") {
       continue;
     }
@@ -1662,7 +685,7 @@ function findThreadRemainingContextPercent(thread: OrchestrationThread | null): 
     return null;
   }
 
-  for (const activity of sortActivities(thread.activities).toReversed()) {
+  for (const activity of reverseReadonlyArray(sortActivities(thread.activities))) {
     if (activity.kind !== "thread.token-usage.updated") {
       continue;
     }
@@ -1801,654 +824,6 @@ function MetaRow({
     </View>
   );
 }
-
-function SwipeDismissRow({
-  actionDisabled = false,
-  actionIcon = "trash-2",
-  children,
-  onAction,
-  onPress,
-}: {
-  readonly actionDisabled?: boolean;
-  readonly actionIcon?: FeatherIconName;
-  readonly children: ReactNode;
-  readonly onAction: () => void | Promise<void>;
-  readonly onPress: () => void;
-}) {
-  const { styles, theme } = useAppThemeContext();
-  const { width } = useWindowDimensions();
-  const translateX = useRef(new Animated.Value(0)).current;
-  const dismissTranslateX = -Math.max(width + 48, 220);
-  const actionOpacity = translateX.interpolate({
-    inputRange: [dismissTranslateX, -52, -14, 0],
-    outputRange: [1, 1, 0.7, 0],
-    extrapolate: "clamp",
-  });
-  const actionScale = translateX.interpolate({
-    inputRange: [dismissTranslateX, -52, -14, 0],
-    outputRange: [1, 1, 0.95, 0.88],
-    extrapolate: "clamp",
-  });
-
-  const animateBack = () => {
-    Animated.spring(translateX, {
-      toValue: 0,
-      useNativeDriver: true,
-      damping: 18,
-      stiffness: 180,
-      mass: 0.9,
-    }).start();
-  };
-
-  const triggerAction = () => {
-    if (actionDisabled) {
-      animateBack();
-      return;
-    }
-    Animated.timing(translateX, {
-      toValue: dismissTranslateX,
-      duration: 140,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (finished) {
-        try {
-          void Promise.resolve(onAction()).catch(() => {
-            animateBack();
-          });
-        } catch {
-          animateBack();
-        }
-      }
-    });
-  };
-
-  const panResponder = PanResponder.create({
-    onMoveShouldSetPanResponder: (_, gestureState) =>
-      Math.abs(gestureState.dx) > 10 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy),
-    onPanResponderMove: (_, gestureState) => {
-      translateX.setValue(Math.min(0, Math.max(gestureState.dx, dismissTranslateX)));
-    },
-    onPanResponderRelease: (_, gestureState) => {
-      if (gestureState.dx <= -72) {
-        triggerAction();
-        return;
-      }
-      animateBack();
-    },
-    onPanResponderTerminate: animateBack,
-  });
-
-  return (
-    <View style={styles.swipeRowShell}>
-      <Animated.View
-        style={[
-          styles.swipeRowAction,
-          {
-            opacity: actionOpacity,
-          },
-        ]}
-      >
-        <Pressable
-          disabled={actionDisabled}
-          onPress={triggerAction}
-          style={[styles.swipeRowActionButton, actionDisabled && styles.buttonDisabled]}
-        >
-          <Animated.View
-            style={[
-              styles.swipeRowActionIconWrap,
-              {
-                transform: [{ scale: actionScale }],
-              },
-            ]}
-          >
-            <Feather color={theme.danger} name={actionIcon} size={16} />
-          </Animated.View>
-        </Pressable>
-      </Animated.View>
-      <Animated.View
-        style={[
-          styles.swipeRowContent,
-          {
-            transform: [{ translateX }],
-          },
-        ]}
-        {...panResponder.panHandlers}
-      >
-        <Pressable onPress={onPress}>{children}</Pressable>
-      </Animated.View>
-    </View>
-  );
-}
-
-const MarkdownMessage = memo(function MarkdownMessage({ value }: { readonly value: string }) {
-  const { styles, theme } = useAppThemeContext();
-  const markdownStyles = useMemo<MarkedStyles>(
-    () => ({
-      text: styles.messageMarkdownText,
-      paragraph: styles.messageMarkdownParagraph,
-      link: styles.messageMarkdownLink,
-      blockquote: styles.messageMarkdownBlockquote,
-      h1: styles.messageMarkdownHeading1,
-      h2: styles.messageMarkdownHeading2,
-      h3: styles.messageMarkdownHeading3,
-      h4: styles.messageMarkdownHeading4,
-      h5: styles.messageMarkdownHeading5,
-      h6: styles.messageMarkdownHeading6,
-      codespan: styles.messageMarkdownCodespan,
-      code: styles.messageMarkdownCode,
-      hr: styles.messageMarkdownRule,
-      list: styles.messageMarkdownList,
-      li: styles.messageMarkdownListItem,
-      table: styles.messageMarkdownTable,
-      tableRow: styles.messageMarkdownTableRow,
-      tableCell: styles.messageMarkdownTableCell,
-      strong: styles.messageMarkdownStrong,
-      em: styles.messageMarkdownEmphasis,
-      strikethrough: styles.messageMarkdownStrikethrough,
-    }),
-    [styles],
-  );
-  const renderer = useMemo(
-    () =>
-      new ChatMarkdownRenderer({
-        root: styles.messageMarkdownRoot,
-        text: styles.messageMarkdownText,
-        paragraph: styles.messageMarkdownParagraph,
-        link: styles.messageMarkdownLink,
-        blockquote: styles.messageMarkdownBlockquote,
-        heading: styles.messageMarkdownHeading3,
-        codespan: styles.messageMarkdownCodespan,
-        codeBlock: styles.messageMarkdownCode,
-        codeHeader: styles.messageMarkdownCodeHeader,
-        codeHeaderLabel: styles.messageMarkdownCodeHeaderLabel,
-        codeScroll: styles.messageMarkdownCodeScroll,
-        codeScrollContent: styles.messageMarkdownCodeScrollContent,
-        codeContent: styles.messageMarkdownCodeContent,
-        codeText: styles.messageMarkdownCodeText,
-        codeComment: styles.messageMarkdownCodeComment,
-        codeKeyword: styles.messageMarkdownCodeKeyword,
-        codeString: styles.messageMarkdownCodeString,
-        codeNumber: styles.messageMarkdownCodeNumber,
-        codeFunction: styles.messageMarkdownCodeFunction,
-        codeOperator: styles.messageMarkdownCodeOperator,
-        codePunctuation: styles.messageMarkdownCodePunctuation,
-        codeType: styles.messageMarkdownCodeType,
-        codeProperty: styles.messageMarkdownCodeProperty,
-        codeTag: styles.messageMarkdownCodeTag,
-        codeAttrName: styles.messageMarkdownCodeAttrName,
-        codeAttrValue: styles.messageMarkdownCodeAttrValue,
-        codeImportant: styles.messageMarkdownCodeImportant,
-        rule: styles.messageMarkdownRule,
-        list: styles.messageMarkdownList,
-        listItem: styles.messageMarkdownListItem,
-        table: styles.messageMarkdownTable,
-        tableRow: styles.messageMarkdownTableRow,
-        tableCell: styles.messageMarkdownTableCell,
-        strong: styles.messageMarkdownStrong,
-        emphasis: styles.messageMarkdownEmphasis,
-        strikethrough: styles.messageMarkdownStrikethrough,
-      }),
-    [styles],
-  );
-  const elements = useMarkdown(value, {
-    colorScheme: "dark",
-    renderer,
-    styles: markdownStyles,
-    theme: {
-      colors: {
-        background: theme.background,
-        border: theme.border,
-        code: theme.panelAlt,
-        link: theme.accent,
-        text: theme.text,
-      },
-    },
-  });
-  const normalizedElements = useMemo(
-    () => normalizeUnderlineNodes(elements, styles.messageMarkdownUnderline, "markdown"),
-    [elements, styles.messageMarkdownUnderline],
-  );
-
-  return <View style={styles.messageMarkdownRoot}>{normalizedElements}</View>;
-});
-
-const ProposedPlanCard = memo(function ProposedPlanCard({
-  proposedPlan,
-}: {
-  readonly proposedPlan: OrchestrationProposedPlan;
-}) {
-  const { styles, theme } = useAppThemeContext();
-  return (
-    <View style={styles.proposedPlanCard}>
-      <View style={styles.proposedPlanHeader}>
-        <View style={styles.proposedPlanHeaderCopy}>
-          <Text style={styles.proposedPlanEyebrow}>Proposed plan</Text>
-          <Text style={styles.proposedPlanStatus}>{formatProposedPlanStatus(proposedPlan)}</Text>
-        </View>
-        <Feather color={theme.accent} name="file-text" size={15} />
-      </View>
-      <MarkdownMessage value={proposedPlan.planMarkdown} />
-    </View>
-  );
-});
-
-const ConversationMessageCard = memo(function ConversationMessageCard({
-  badgeLabel,
-  expandable,
-  highlighted,
-  expanded,
-  isMetaRevealed,
-  message,
-  messageMetaOpacity,
-  onLongPress,
-  onRevealMeta,
-  onToggleExpanded,
-  resolveAttachmentImageUrl,
-}: {
-  readonly badgeLabel: string | null;
-  readonly expandable: boolean;
-  readonly highlighted: boolean;
-  readonly expanded: boolean;
-  readonly isMetaRevealed: boolean;
-  readonly message: OrchestrationMessage;
-  readonly messageMetaOpacity: Animated.Value;
-  readonly onLongPress?: (message: OrchestrationMessage) => void;
-  readonly onRevealMeta: (messageId: string) => void;
-  readonly onToggleExpanded: (messageId: string) => void;
-  readonly resolveAttachmentImageUrl: (
-    attachment: ChatAttachment | DraftImageAttachment,
-  ) => string | null;
-}) {
-  const { styles } = useAppThemeContext();
-  const hasMessageText = message.text.length > 0;
-  const assistantPreviewText = useMemo(
-    () => (expandable && !expanded ? buildAssistantMessagePreview(message.text) : message.text),
-    [expandable, expanded, message.text],
-  );
-  const messageAttachmentPreviews = useMemo(
-    () =>
-      (message.attachments ?? [])
-        .filter((attachment) => attachment.type === "image")
-        .map((attachment) => ({
-          id: attachment.id,
-          name: attachment.name,
-          uri: resolveAttachmentImageUrl(attachment),
-        }))
-        .filter(
-          (
-            attachment,
-          ): attachment is {
-            readonly id: string;
-            readonly name: string;
-            readonly uri: string;
-          } => attachment.uri !== null,
-        ),
-    [message.attachments, resolveAttachmentImageUrl],
-  );
-
-  return (
-    <Pressable
-      delayLongPress={180}
-      onLongPress={
-        onLongPress
-          ? () => {
-              onLongPress(message);
-            }
-          : undefined
-      }
-      onPress={() => {
-        onRevealMeta(message.id);
-      }}
-      style={[
-        styles.messageWrap,
-        message.role === "user" ? styles.messageWrapUser : styles.messageWrapAssistant,
-      ]}
-    >
-      <View
-        style={[
-          styles.messageRow,
-          message.role === "user" ? styles.messageRowUser : styles.messageRowAssistant,
-          highlighted && styles.messageRowAssistantLatest,
-        ]}
-      >
-        <View style={styles.messageBody}>
-          {badgeLabel ? (
-            <View style={styles.messageQueuedBadge}>
-              <Text style={styles.messageQueuedBadgeText}>{badgeLabel}</Text>
-            </View>
-          ) : null}
-          {hasMessageText || message.streaming ? (
-            hasMessageText ? (
-              message.role === "assistant" ? (
-                expandable && !expanded ? (
-                  <>
-                    <Text style={[styles.messageText, styles.messageTextAssistant]}>
-                      {assistantPreviewText}
-                    </Text>
-                    <Pressable
-                      onPress={() => {
-                        onToggleExpanded(message.id);
-                      }}
-                      style={styles.messageExpandButton}
-                    >
-                      <Text style={styles.messageExpandButtonLabel}>Expand</Text>
-                    </Pressable>
-                  </>
-                ) : (
-                  <>
-                    <MarkdownMessage value={message.text} />
-                    {expandable ? (
-                      <Pressable
-                        onPress={() => {
-                          onToggleExpanded(message.id);
-                        }}
-                        style={styles.messageExpandButton}
-                      >
-                        <Text style={styles.messageExpandButtonLabel}>Collapse</Text>
-                      </Pressable>
-                    ) : null}
-                  </>
-                )
-              ) : (
-                <Text
-                  style={[
-                    styles.messageText,
-                    message.role === "user" ? styles.messageTextUser : styles.messageTextAssistant,
-                  ]}
-                >
-                  {message.text}
-                </Text>
-              )
-            ) : (
-              <Text style={[styles.messageText, styles.messageTextAssistant]}>Streaming...</Text>
-            )
-          ) : null}
-
-          {messageAttachmentPreviews.length > 0 ? (
-            <View style={styles.messageAttachmentRow}>
-              {messageAttachmentPreviews.map((attachment) => (
-                <View key={attachment.id} style={styles.messageAttachmentTile}>
-                  <Image
-                    resizeMode="cover"
-                    source={{ uri: attachment.uri }}
-                    style={styles.messageAttachmentImage}
-                  />
-                </View>
-              ))}
-            </View>
-          ) : null}
-        </View>
-      </View>
-      {isMetaRevealed ? (
-        <Animated.View
-          style={[
-            styles.messageMetaReveal,
-            { opacity: messageMetaOpacity },
-            message.role === "user"
-              ? styles.messageMetaRevealUser
-              : styles.messageMetaRevealAssistant,
-          ]}
-        >
-          <Text style={styles.messageMetaRevealText}>
-            {formatTimestamp(message.updatedAt)}
-            {message.streaming ? " / streaming" : ""}
-          </Text>
-        </Animated.View>
-      ) : null}
-    </Pressable>
-  );
-});
-
-const ConversationTimeline = memo(function ConversationTimeline({
-  expandedAssistantMessageIds,
-  expandedActivityGroupIds,
-  expandedDiffFileIds,
-  expandedDiffIds,
-  handleConversationContentSizeChange,
-  handleConversationLayout,
-  handleConversationScroll,
-  handlePullToRefresh,
-  highlightedAssistantMessageId,
-  hydratedTurnDiffs,
-  isPullRefreshing,
-  messageMetaOpacity,
-  pinnedQueuedMessages,
-  requestExpandDiffFile,
-  requestHandleMessageLongPress,
-  requestHandlePinnedQueuedMessageLongPress,
-  requestRevealMessageMeta,
-  requestToggleAssistantMessageExpanded,
-  requestToggleActivityGroup,
-  requestToggleDiffEntry,
-  resolveAttachmentImageUrl,
-  revealedMessageId,
-  scrollRef,
-  selectedThreadConversationId,
-  showWaitingIndicator,
-  timelineEntries,
-  waitingIndicatorLabel,
-  waitingIndicatorMotion,
-}: {
-  readonly expandedAssistantMessageIds: Readonly<Record<string, true>>;
-  readonly expandedActivityGroupIds: Readonly<Record<string, true>>;
-  readonly expandedDiffFileIds: Readonly<Record<string, Readonly<Record<string, true>>>>;
-  readonly expandedDiffIds: Readonly<Record<string, true>>;
-  readonly handleConversationContentSizeChange: (width: number, height: number) => void;
-  readonly handleConversationLayout: (event: LayoutChangeEvent) => void;
-  readonly handleConversationScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
-  readonly handlePullToRefresh: () => void;
-  readonly highlightedAssistantMessageId: string | null;
-  readonly hydratedTurnDiffs: Readonly<Record<string, HydratedTurnDiffState>>;
-  readonly isPullRefreshing: boolean;
-  readonly messageMetaOpacity: Animated.Value;
-  readonly pinnedQueuedMessages: ReadonlyArray<PinnedQueuedMessage>;
-  readonly requestExpandDiffFile: (entryId: string, fileId: string) => void;
-  readonly requestHandleMessageLongPress: (message: OrchestrationMessage) => void;
-  readonly requestHandlePinnedQueuedMessageLongPress: (messageId: string) => void;
-  readonly requestRevealMessageMeta: (messageId: string) => void;
-  readonly requestToggleAssistantMessageExpanded: (messageId: string) => void;
-  readonly requestToggleActivityGroup: (groupId: string) => void;
-  readonly requestToggleDiffEntry: (entry: ThreadDiffEntry) => void;
-  readonly resolveAttachmentImageUrl: (
-    attachment: ChatAttachment | DraftImageAttachment,
-  ) => string | null;
-  readonly revealedMessageId: string | null;
-  readonly scrollRef: RefObject<FlatList<ConversationRenderItem> | null>;
-  readonly selectedThreadConversationId: string | null;
-  readonly showWaitingIndicator: boolean;
-  readonly timelineEntries: ReadonlyArray<ThreadTimelineEntry>;
-  readonly waitingIndicatorLabel: string;
-  readonly waitingIndicatorMotion: Animated.Value;
-}) {
-  const { styles, theme } = useAppThemeContext();
-  const renderItems = useMemo(
-    () =>
-      buildConversationRenderItems({
-        timelineEntries,
-        pinnedQueuedMessages,
-        showWaitingIndicator,
-      }),
-    [pinnedQueuedMessages, showWaitingIndicator, timelineEntries],
-  );
-
-  const renderConversationItem = useCallback(
-    ({ item }: { readonly item: ConversationRenderItem }) => {
-      if (item.kind === "empty") {
-        return (
-          <View style={styles.emptyConversation}>
-            <Text style={styles.sectionTitle}>No output yet</Text>
-            <Text style={styles.helperText}>Send the first instruction to open the stream.</Text>
-          </View>
-        );
-      }
-
-      if (item.kind === "waiting") {
-        return (
-          <Animated.View
-            style={[
-              styles.waitingIndicator,
-              {
-                opacity: waitingIndicatorMotion.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [0.55, 1],
-                }),
-                transform: [
-                  {
-                    translateY: waitingIndicatorMotion.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, -4],
-                    }),
-                  },
-                ],
-              },
-            ]}
-          >
-            <Text style={styles.waitingIndicatorText}>{waitingIndicatorLabel}</Text>
-          </Animated.View>
-        );
-      }
-
-      if (item.kind === "queued") {
-        return (
-          <ConversationMessageCard
-            badgeLabel={item.badgeLabel}
-            expandable={false}
-            expanded
-            highlighted={false}
-            isMetaRevealed={revealedMessageId === item.message.id}
-            message={item.message}
-            messageMetaOpacity={messageMetaOpacity}
-            onLongPress={(message) => {
-              requestHandlePinnedQueuedMessageLongPress(message.id);
-            }}
-            onRevealMeta={requestRevealMessageMeta}
-            onToggleExpanded={requestToggleAssistantMessageExpanded}
-            resolveAttachmentImageUrl={resolveAttachmentImageUrl}
-          />
-        );
-      }
-
-      const entry = item.entry;
-      if (entry.kind === "activityGroup") {
-        return (
-          <TimelineActivityGroup
-            activities={entry.activities}
-            expanded={entry.id in expandedActivityGroupIds}
-            onToggle={() => {
-              requestToggleActivityGroup(entry.id);
-            }}
-          />
-        );
-      }
-
-      if (entry.kind === "diff") {
-        const hydratedDiff =
-          selectedThreadConversationId === null
-            ? null
-            : (hydratedTurnDiffs[threadDiffCacheKey(selectedThreadConversationId, entry.turnId)] ??
-              null);
-
-        return (
-          <ThreadDiffCard
-            entry={entry}
-            expanded={entry.id in expandedDiffIds}
-            expandedFileIds={expandedDiffFileIds[entry.id] ?? EMPTY_EXPANDED_DIFF_FILE_IDS}
-            hydratedDiff={hydratedDiff}
-            onExpandFile={(fileId) => {
-              requestExpandDiffFile(entry.id, fileId);
-            }}
-            onToggle={() => {
-              requestToggleDiffEntry(entry);
-            }}
-          />
-        );
-      }
-
-      if (entry.kind === "proposedPlan") {
-        return <ProposedPlanCard proposedPlan={entry.proposedPlan} />;
-      }
-
-      const highlighted =
-        entry.message.role === "assistant" && entry.message.id === highlightedAssistantMessageId;
-      const expandable = shouldCollapseAssistantMessage({
-        highlighted,
-        message: entry.message,
-      });
-
-      return (
-        <ConversationMessageCard
-          badgeLabel={null}
-          expandable={expandable}
-          expanded={!expandable || expandedAssistantMessageIds[entry.message.id] === true}
-          highlighted={highlighted}
-          isMetaRevealed={revealedMessageId === entry.message.id}
-          message={entry.message}
-          messageMetaOpacity={messageMetaOpacity}
-          onLongPress={requestHandleMessageLongPress}
-          onRevealMeta={requestRevealMessageMeta}
-          onToggleExpanded={requestToggleAssistantMessageExpanded}
-          resolveAttachmentImageUrl={resolveAttachmentImageUrl}
-        />
-      );
-    },
-    [
-      expandedActivityGroupIds,
-      expandedAssistantMessageIds,
-      expandedDiffFileIds,
-      expandedDiffIds,
-      highlightedAssistantMessageId,
-      hydratedTurnDiffs,
-      messageMetaOpacity,
-      requestExpandDiffFile,
-      requestHandleMessageLongPress,
-      requestHandlePinnedQueuedMessageLongPress,
-      requestRevealMessageMeta,
-      requestToggleActivityGroup,
-      requestToggleAssistantMessageExpanded,
-      requestToggleDiffEntry,
-      resolveAttachmentImageUrl,
-      revealedMessageId,
-      selectedThreadConversationId,
-      styles.emptyConversation,
-      styles.helperText,
-      styles.sectionTitle,
-      styles.waitingIndicator,
-      styles.waitingIndicatorText,
-      waitingIndicatorLabel,
-      waitingIndicatorMotion,
-    ],
-  );
-
-  return (
-    <FlatList
-      ref={scrollRef}
-      contentContainerStyle={styles.messagesScrollContent}
-      data={renderItems}
-      initialNumToRender={10}
-      keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
-      keyboardShouldPersistTaps="handled"
-      keyExtractor={(item) => item.id}
-      maxToRenderPerBatch={6}
-      onContentSizeChange={handleConversationContentSizeChange}
-      onLayout={handleConversationLayout}
-      onScroll={handleConversationScroll}
-      removeClippedSubviews={Platform.OS === "android"}
-      refreshControl={
-        <RefreshControl
-          onRefresh={handlePullToRefresh}
-          refreshing={isPullRefreshing}
-          tintColor={theme.accent}
-        />
-      }
-      renderItem={renderConversationItem}
-      scrollEventThrottle={16}
-      style={styles.messagesScroll}
-      updateCellsBatchingPeriod={40}
-      windowSize={7}
-    />
-  );
-});
 
 function isThreadWaitingForResponse(
   thread: OrchestrationThread | null,
@@ -2602,41 +977,27 @@ function AppShellContent() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [composerInputHeight, setComposerInputHeight] = useState(COMPOSER_INPUT_MIN_HEIGHT);
 
-  const navTranslateX = useRef(new Animated.Value(-sidebarWidth)).current;
-  const settingsTranslateX = useRef(new Animated.Value(floatingPanelWidth)).current;
   const workspaceOpacity = useRef(new Animated.Value(1)).current;
   const workspaceTranslateY = useRef(new Animated.Value(0)).current;
   const messageMetaOpacity = useRef(new Animated.Value(0)).current;
   const messageMetaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deviceNotificationChannelReadyRef = useRef(false);
-  const messagesScrollRef = useRef<FlatList<ConversationRenderItem> | null>(null);
+  const messagesScrollRef = useRef<FlashListRef<ConversationRenderItem> | null>(null);
   const processingServerNotificationRef = useRef(false);
   const directoryLoadSequenceRef = useRef(0);
   const waitingIndicatorMotion = useRef(new Animated.Value(0)).current;
-  const messageScrollMetricsRef = useRef<MessageScrollMetrics>({
-    contentHeight: 0,
-    viewportHeight: 0,
-    offsetY: 0,
-  });
-  const forceScrollToBottomRef = useRef(false);
-  const navBackdropOpacity = useMemo(
+  const conversationAutoScrollController = useMemo(
     () =>
-      navTranslateX.interpolate({
-        inputRange: [-sidebarWidth, 0],
-        outputRange: [0, 1],
-        extrapolate: "clamp",
+      createConversationAutoScrollController({
+        requestAnimationFrame,
+        cancelAnimationFrame,
+        onScrollToBottom: () => {
+          messagesScrollRef.current?.scrollToEnd({ animated: true });
+        },
+        stickyThreshold: MESSAGE_SCROLL_STICKY_THRESHOLD,
       }),
-    [navTranslateX, sidebarWidth],
-  );
-  const settingsBackdropOpacity = useMemo(
-    () =>
-      settingsTranslateX.interpolate({
-        inputRange: [0, floatingPanelWidth],
-        outputRange: [1, 0],
-        extrapolate: "clamp",
-      }),
-    [floatingPanelWidth, settingsTranslateX],
+    [],
   );
   const deferredSnapshot = useDeferredValue(snapshot);
   const deferredServerConfig = useDeferredValue(serverConfig);
@@ -2737,7 +1098,7 @@ function AppShellContent() {
         {
           badgeLabel: formatQueuedBadgeLabel(index + 1),
           message,
-        } satisfies PinnedQueuedMessage,
+        } satisfies PinnedConversationMessage,
       ];
     });
   }, [messages, selectedThread?.queuedTurns]);
@@ -2862,9 +1223,8 @@ function AppShellContent() {
   useEffect(() => {
     if (sidebarPersistent) {
       setNavMenuOpen(false);
-      navTranslateX.setValue(-sidebarWidth);
     }
-  }, [navTranslateX, sidebarPersistent, sidebarWidth]);
+  }, [sidebarPersistent]);
 
   useEffect(() => {
     return () => {
@@ -2984,18 +1344,6 @@ function AppShellContent() {
   ]);
 
   useEffect(() => {
-    if (!navMenuOpen) {
-      navTranslateX.setValue(-sidebarWidth);
-    }
-  }, [navMenuOpen, navTranslateX, sidebarWidth]);
-
-  useEffect(() => {
-    if (!settingsOpen) {
-      settingsTranslateX.setValue(floatingPanelWidth);
-    }
-  }, [floatingPanelWidth, settingsOpen, settingsTranslateX]);
-
-  useEffect(() => {
     workspaceOpacity.setValue(0.55);
     workspaceTranslateY.setValue(18);
     Animated.parallel([
@@ -3107,59 +1455,43 @@ function AppShellContent() {
         clearTimeout(messageMetaTimerRef.current);
         messageMetaTimerRef.current = null;
       }
+      conversationAutoScrollController.cancelPendingScroll();
     };
-  }, []);
+  }, [conversationAutoScrollController]);
 
-  const scrollConversationToEnd = () => {
-    messagesScrollRef.current?.scrollToEnd({ animated: true });
-  };
+  const requestScrollConversationToEnd = useCallback(
+    (options?: { readonly force?: boolean }) => {
+      conversationAutoScrollController.requestScrollToBottom({
+        force: options?.force ?? false,
+      });
+    },
+    [conversationAutoScrollController],
+  );
 
-  const requestScrollConversationToEnd = useCallback(() => {
-    forceScrollToBottomRef.current = true;
-    requestAnimationFrame(() => {
-      scrollConversationToEnd();
-      forceScrollToBottomRef.current = false;
-    });
-  }, []);
+  const handleConversationScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      conversationAutoScrollController.handleScroll({
+        contentHeight: contentSize.height,
+        viewportHeight: layoutMeasurement.height,
+        offsetY: contentOffset.y,
+      });
+    },
+    [conversationAutoScrollController],
+  );
 
-  const isNearConversationBottom = useCallback(() => {
-    const { contentHeight, viewportHeight, offsetY } = messageScrollMetricsRef.current;
-    if (viewportHeight <= 0) {
-      return true;
-    }
-
-    const distanceFromBottom = contentHeight - (offsetY + viewportHeight);
-    return distanceFromBottom <= MESSAGE_SCROLL_STICKY_THRESHOLD;
-  }, []);
-
-  const handleConversationScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    messageScrollMetricsRef.current = {
-      contentHeight: contentSize.height,
-      viewportHeight: layoutMeasurement.height,
-      offsetY: contentOffset.y,
-    };
-  }, []);
-
-  const handleConversationLayout = useCallback((event: LayoutChangeEvent) => {
-    messageScrollMetricsRef.current = {
-      ...messageScrollMetricsRef.current,
-      viewportHeight: event.nativeEvent.layout.height,
-    };
-  }, []);
+  const handleConversationLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      conversationAutoScrollController.handleLayout(event.nativeEvent.layout.height);
+    },
+    [conversationAutoScrollController],
+  );
 
   const handleConversationContentSizeChange = useCallback(
     (_width: number, height: number) => {
-      const shouldStickToBottom = forceScrollToBottomRef.current || isNearConversationBottom();
-      messageScrollMetricsRef.current = {
-        ...messageScrollMetricsRef.current,
-        contentHeight: height,
-      };
-      if (shouldStickToBottom) {
-        requestScrollConversationToEnd();
-      }
+      conversationAutoScrollController.handleContentSizeChange(height);
     },
-    [isNearConversationBottom, requestScrollConversationToEnd],
+    [conversationAutoScrollController],
   );
 
   useEffect(() => {
@@ -3169,7 +1501,7 @@ function AppShellContent() {
 
     const keyboardShowEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const subscription = Keyboard.addListener(keyboardShowEvent, () => {
-      requestScrollConversationToEnd();
+      requestScrollConversationToEnd({ force: true });
     });
 
     return () => {
@@ -3191,8 +1523,10 @@ function AppShellContent() {
       return;
     }
 
-    requestScrollConversationToEnd();
+    conversationAutoScrollController.cancelPendingScroll();
+    requestScrollConversationToEnd({ force: true });
   }, [
+    conversationAutoScrollController,
     pinnedQueuedMessages.length,
     requestScrollConversationToEnd,
     selectedThreadConversationId,
@@ -3250,54 +1584,27 @@ function AppShellContent() {
     };
   }, [showWaitingIndicator, waitingIndicatorMotion]);
 
-  const animatePanel = (
-    animatedValue: Animated.Value,
-    toValue: number,
-    onComplete?: () => void,
-  ) => {
-    Animated.timing(animatedValue, {
-      toValue,
-      duration: PANEL_ANIMATION_DURATION_MS,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (finished) {
-        onComplete?.();
-      }
-    });
-  };
-
   const closeNavMenu = () => {
-    animatePanel(navTranslateX, -sidebarWidth, () => {
-      setNavMenuOpen(false);
-    });
+    setNavMenuOpen(false);
   };
 
   const closeSettingsPanel = () => {
-    animatePanel(settingsTranslateX, floatingPanelWidth, () => {
-      setSettingsOpen(false);
-    });
+    setSettingsOpen(false);
   };
 
   const openNavMenu = () => {
     if (sidebarPersistent) {
       return;
     }
-    settingsTranslateX.setValue(floatingPanelWidth);
     setSettingsOpen(false);
-    navTranslateX.setValue(-sidebarWidth);
     setNavMenuOpen(true);
-    animatePanel(navTranslateX, 0);
   };
 
   const openSettingsPanel = () => {
     if (!sidebarPersistent) {
-      navTranslateX.setValue(-sidebarWidth);
       setNavMenuOpen(false);
     }
-    settingsTranslateX.setValue(floatingPanelWidth);
     setSettingsOpen(true);
-    animatePanel(settingsTranslateX, 0);
   };
 
   const openProjectBuilder = () => {
@@ -3326,45 +1633,6 @@ function AppShellContent() {
     setIsLoadingDirectory(false);
     setIsProjectBuilderMutating(false);
   };
-
-  const navPanelPanResponder = PanResponder.create({
-    onMoveShouldSetPanResponder: (_, gestureState) =>
-      navMenuOpen &&
-      !sidebarPersistent &&
-      gestureState.dx < -10 &&
-      Math.abs(gestureState.dx) > Math.abs(gestureState.dy),
-    onPanResponderMove: (_, gestureState) => {
-      navTranslateX.setValue(Math.max(-sidebarWidth, Math.min(0, gestureState.dx)));
-    },
-    onPanResponderRelease: (_, gestureState) => {
-      if (gestureState.dx <= -Math.min(96, sidebarWidth * 0.24)) {
-        closeNavMenu();
-        return;
-      }
-      animatePanel(navTranslateX, 0);
-    },
-    onPanResponderTerminate: () => {
-      animatePanel(navTranslateX, 0);
-    },
-  });
-
-  const settingsPanelPanResponder = PanResponder.create({
-    onMoveShouldSetPanResponder: (_, gestureState) =>
-      settingsOpen && gestureState.dx > 10 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy),
-    onPanResponderMove: (_, gestureState) => {
-      settingsTranslateX.setValue(Math.max(0, Math.min(floatingPanelWidth, gestureState.dx)));
-    },
-    onPanResponderRelease: (_, gestureState) => {
-      if (gestureState.dx >= Math.min(96, floatingPanelWidth * 0.24)) {
-        closeSettingsPanel();
-        return;
-      }
-      animatePanel(settingsTranslateX, 0);
-    },
-    onPanResponderTerminate: () => {
-      animatePanel(settingsTranslateX, 0);
-    },
-  });
 
   const updateConnectionSettings = (patch: Partial<ConnectionSettings>) => {
     clearError();
@@ -6336,7 +4604,7 @@ function AppShellContent() {
   );
 
   return (
-    <AppThemeContext.Provider value={themeContextValue}>
+    <AppThemeProvider value={themeContextValue}>
       <SafeAreaView style={styles.safeArea} edges={["top", "right", "bottom", "left"]}>
         {/* oxlint-disable-next-line react/style-prop-object */}
         <StatusBar style="light" />
@@ -6420,47 +4688,25 @@ function AppShellContent() {
               </View>
             </View>
 
-            {!sidebarPersistent && navMenuOpen ? (
-              <View pointerEvents="box-none" style={styles.overlayRoot}>
-                <Animated.View style={[styles.overlayBackdrop, { opacity: navBackdropOpacity }]}>
-                  <Pressable onPress={closeNavMenu} style={styles.overlayBackdropPressable} />
-                </Animated.View>
-                <Animated.View
-                  style={[
-                    styles.overlayPanelLeft,
-                    {
-                      width: sidebarWidth,
-                      transform: [{ translateX: navTranslateX }],
-                    },
-                  ]}
-                  {...navPanelPanResponder.panHandlers}
-                >
-                  {renderSidebar()}
-                </Animated.View>
-              </View>
+            {!sidebarPersistent ? (
+              <SlidingPanel
+                onClose={closeNavMenu}
+                open={navMenuOpen}
+                side="left"
+                width={sidebarWidth}
+              >
+                {renderSidebar()}
+              </SlidingPanel>
             ) : null}
 
-            {settingsOpen ? (
-              <View pointerEvents="box-none" style={styles.overlayRoot}>
-                <Animated.View
-                  style={[styles.overlayBackdrop, { opacity: settingsBackdropOpacity }]}
-                >
-                  <Pressable onPress={closeSettingsPanel} style={styles.overlayBackdropPressable} />
-                </Animated.View>
-                <Animated.View
-                  style={[
-                    styles.overlayPanelRight,
-                    {
-                      width: floatingPanelWidth,
-                      transform: [{ translateX: settingsTranslateX }],
-                    },
-                  ]}
-                  {...settingsPanelPanResponder.panHandlers}
-                >
-                  {renderSettingsPanel()}
-                </Animated.View>
-              </View>
-            ) : null}
+            <SlidingPanel
+              onClose={closeSettingsPanel}
+              open={settingsOpen}
+              side="right"
+              width={floatingPanelWidth}
+            >
+              {renderSettingsPanel()}
+            </SlidingPanel>
 
             {conversationPickerMode ? (
               <View pointerEvents="box-none" style={styles.overlayRoot}>
@@ -6482,7 +4728,7 @@ function AppShellContent() {
           </KeyboardAvoidingView>
         </View>
       </SafeAreaView>
-    </AppThemeContext.Provider>
+    </AppThemeProvider>
   );
 }
 
@@ -8553,19 +6799,4 @@ function getStyles(theme: AppTheme) {
   const nextStyles = createStyles(theme);
   stylesCache.set(theme.key, nextStyles);
   return nextStyles;
-}
-
-type AppThemeContextValue = {
-  readonly styles: ReturnType<typeof createStyles>;
-  readonly theme: AppTheme;
-};
-
-const AppThemeContext = createContext<AppThemeContextValue | null>(null);
-
-function useAppThemeContext() {
-  const context = useContext(AppThemeContext);
-  if (!context) {
-    throw new Error("App theme context is unavailable.");
-  }
-  return context;
 }
