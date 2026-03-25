@@ -1,6 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import { Feather } from "@expo/vector-icons";
 import Constants from "expo-constants";
+import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import Prism from "prismjs";
 import "prismjs/components/prism-bash";
@@ -90,6 +91,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { MOBILE_DEFAULT_MODEL } from "./defaults";
+import { getMessageCopyValue, type MessageCopyFormat } from "./messageCopy";
 import { buildAttachmentUrl, createClientId } from "./protocol";
 import {
   buildConversationRenderItems,
@@ -256,6 +258,10 @@ let notificationsModulePromise: Promise<NotificationsModule> | null = null;
 function loadNotificationsModule() {
   notificationsModulePromise ??= import("expo-notifications");
   return notificationsModulePromise;
+}
+
+async function copyTextToClipboard(text: string) {
+  await Clipboard.setStringAsync(text);
 }
 
 function getCodeTokenStyles(
@@ -480,7 +486,7 @@ function applyUnderlineToNode(
   }
   if (typeof node === "string" || typeof node === "number") {
     return (
-      <Text key={keyPrefix} selectable style={underlineStyle}>
+      <Text key={keyPrefix} style={underlineStyle}>
         {node}
       </Text>
     );
@@ -552,9 +558,7 @@ class ChatMarkdownRenderer extends Renderer {
           contentContainerStyle={this.markdownStyles.codeScrollContent}
         >
           <View style={this.markdownStyles.codeContent}>
-            <Text selectable style={this.markdownStyles.codeText}>
-              {highlightedContent}
-            </Text>
+            <Text style={this.markdownStyles.codeText}>{highlightedContent}</Text>
           </View>
         </ScrollView>
       </View>
@@ -563,7 +567,7 @@ class ChatMarkdownRenderer extends Renderer {
 
   override codespan(text: string, styles?: TextStyle): ReactNode {
     return (
-      <Text key={this.getKey()} selectable style={[styles, this.markdownStyles.codespan]}>
+      <Text key={this.getKey()} style={[styles, this.markdownStyles.codespan]}>
         {text}
       </Text>
     );
@@ -2049,7 +2053,7 @@ const ConversationMessageCard = memo(function ConversationMessageCard({
   readonly isMetaRevealed: boolean;
   readonly message: OrchestrationMessage;
   readonly messageMetaOpacity: Animated.Value;
-  readonly onLongPress?: (messageId: string) => void;
+  readonly onLongPress?: (message: OrchestrationMessage) => void;
   readonly onRevealMeta: (messageId: string) => void;
   readonly onToggleExpanded: (messageId: string) => void;
   readonly resolveAttachmentImageUrl: (
@@ -2089,7 +2093,7 @@ const ConversationMessageCard = memo(function ConversationMessageCard({
       onLongPress={
         onLongPress
           ? () => {
-              onLongPress(message.id);
+              onLongPress(message);
             }
           : undefined
       }
@@ -2211,6 +2215,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   messageMetaOpacity,
   pinnedQueuedMessages,
   requestExpandDiffFile,
+  requestHandleMessageLongPress,
   requestHandlePinnedQueuedMessageLongPress,
   requestRevealMessageMeta,
   requestToggleAssistantMessageExpanded,
@@ -2239,6 +2244,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   readonly messageMetaOpacity: Animated.Value;
   readonly pinnedQueuedMessages: ReadonlyArray<PinnedQueuedMessage>;
   readonly requestExpandDiffFile: (entryId: string, fileId: string) => void;
+  readonly requestHandleMessageLongPress: (message: OrchestrationMessage) => void;
   readonly requestHandlePinnedQueuedMessageLongPress: (messageId: string) => void;
   readonly requestRevealMessageMeta: (messageId: string) => void;
   readonly requestToggleAssistantMessageExpanded: (messageId: string) => void;
@@ -2313,7 +2319,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
             isMetaRevealed={revealedMessageId === item.message.id}
             message={item.message}
             messageMetaOpacity={messageMetaOpacity}
-            onLongPress={requestHandlePinnedQueuedMessageLongPress}
+            onLongPress={(message) => {
+              requestHandlePinnedQueuedMessageLongPress(message.id);
+            }}
             onRevealMeta={requestRevealMessageMeta}
             onToggleExpanded={requestToggleAssistantMessageExpanded}
             resolveAttachmentImageUrl={resolveAttachmentImageUrl}
@@ -2377,7 +2385,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
           isMetaRevealed={revealedMessageId === entry.message.id}
           message={entry.message}
           messageMetaOpacity={messageMetaOpacity}
-          onLongPress={undefined}
+          onLongPress={requestHandleMessageLongPress}
           onRevealMeta={requestRevealMessageMeta}
           onToggleExpanded={requestToggleAssistantMessageExpanded}
           resolveAttachmentImageUrl={resolveAttachmentImageUrl}
@@ -2393,6 +2401,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       hydratedTurnDiffs,
       messageMetaOpacity,
       requestExpandDiffFile,
+      requestHandleMessageLongPress,
       requestHandlePinnedQueuedMessageLongPress,
       requestRevealMessageMeta,
       requestToggleActivityGroup,
@@ -4001,6 +4010,49 @@ function AppShellContent() {
     [cancelQueuedTurn, pinnedQueuedMessages, restoreQueuedTurnToDraft, selectedThread],
   );
 
+  const copyMessageContent = useCallback(
+    (text: string, format: MessageCopyFormat) => {
+      void (async () => {
+        try {
+          await copyTextToClipboard(getMessageCopyValue({ format, text }));
+          showToast(format === "markdown" ? "Copied markdown" : "Copied plain text");
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Failed to copy message");
+        }
+      })();
+    },
+    [showToast],
+  );
+
+  const handleMessageLongPress = useCallback(
+    (message: OrchestrationMessage) => {
+      if (message.text.trim().length === 0) {
+        showToast("This message has no text to copy");
+        return;
+      }
+
+      Alert.alert("Copy message", "Choose which format to copy.", [
+        {
+          text: "Rich markdown",
+          onPress: () => {
+            copyMessageContent(message.text, "markdown");
+          },
+        },
+        {
+          text: "Plain text",
+          onPress: () => {
+            copyMessageContent(message.text, "plainText");
+          },
+        },
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+      ]);
+    },
+    [copyMessageContent, showToast],
+  );
+
   const resolveNotificationSettingsInput = (input?: {
     readonly enabled?: boolean;
     readonly appToken: string | null;
@@ -5110,6 +5162,7 @@ function AppShellContent() {
         messageMetaOpacity={messageMetaOpacity}
         pinnedQueuedMessages={pinnedQueuedMessages}
         requestExpandDiffFile={expandDiffFile}
+        requestHandleMessageLongPress={handleMessageLongPress}
         requestHandlePinnedQueuedMessageLongPress={handlePinnedQueuedMessageLongPress}
         requestRevealMessageMeta={handleRevealMessageMeta}
         requestToggleActivityGroup={toggleActivityGroup}

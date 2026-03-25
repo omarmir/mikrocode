@@ -20,6 +20,7 @@
     "@t3tools/contracts": "workspace:*",
     "@types/prismjs": "^1.26.6",
     "expo": "^54.0.21",
+    "expo-clipboard": "~8.0.8",
     "expo-constants": "~18.0.13",
     "expo-image-picker": "~17.0.10",
     "expo-linear-gradient": "~15.0.8",
