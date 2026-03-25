@@ -178,6 +178,26 @@ it.effect("accepts server notification push envelopes", () =>
   }),
 );
 
+it.effect("accepts snapshot invalidation push envelopes", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWsResponse({
+      type: "push",
+      sequence: 4,
+      channel: ORCHESTRATION_WS_CHANNELS.snapshotInvalidated,
+      data: {
+        snapshotSequence: 41,
+        threadIds: ["thread-1"],
+      },
+    });
+
+    if (!("type" in parsed) || parsed.type !== "push") {
+      assert.fail("expected websocket response to decode as a push envelope");
+    }
+
+    assert.strictEqual(parsed.channel, ORCHESTRATION_WS_CHANNELS.snapshotInvalidated);
+  }),
+);
+
 it.effect("rejects push envelopes when channel payload does not match the channel schema", () =>
   Effect.gen(function* () {
     const result = yield* Effect.exit(

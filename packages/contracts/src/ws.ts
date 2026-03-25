@@ -3,6 +3,7 @@ import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./ba
 import {
   ClientOrchestrationCommand,
   OrchestrationEvent,
+  OrchestrationSnapshotInvalidationPayload,
   ORCHESTRATION_WS_CHANNELS,
   OrchestrationGetFullThreadDiffInput,
   ORCHESTRATION_WS_METHODS,
@@ -151,6 +152,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
   readonly [WS_CHANNELS.serverNotification]: typeof ServerAppNotification.Type;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
+  readonly [ORCHESTRATION_WS_CHANNELS.snapshotInvalidated]: OrchestrationSnapshotInvalidationPayload;
 }
 
 export type WsPushChannel = keyof WsPushPayloadByChannel;
@@ -180,12 +182,17 @@ export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   OrchestrationEvent,
 );
+export const WsPushOrchestrationSnapshotInvalidated = makeWsPushSchema(
+  ORCHESTRATION_WS_CHANNELS.snapshotInvalidated,
+  OrchestrationSnapshotInvalidationPayload,
+);
 
 export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.serverWelcome,
   WS_CHANNELS.serverConfigUpdated,
   WS_CHANNELS.serverNotification,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
+  ORCHESTRATION_WS_CHANNELS.snapshotInvalidated,
 ]);
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
 
@@ -194,6 +201,7 @@ export const WsPush = Schema.Union([
   WsPushServerConfigUpdated,
   WsPushServerNotification,
   WsPushOrchestrationDomainEvent,
+  WsPushOrchestrationSnapshotInvalidated,
 ]);
 export type WsPush = typeof WsPush.Type;
 

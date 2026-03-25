@@ -9,7 +9,7 @@ import {
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ReadModelQuery } from "../../orchestration/Services/ReadModelQuery.ts";
 import { checkpointRefForThreadTurn } from "../Utils.ts";
 import { CheckpointDiffQueryLive } from "./CheckpointDiffQuery.ts";
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
@@ -121,7 +121,7 @@ describe("CheckpointDiffQueryLive", () => {
     const layer = CheckpointDiffQueryLive.pipe(
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
       Layer.provideMerge(
-        Layer.succeed(ProjectionSnapshotQuery, {
+        Layer.succeed(ReadModelQuery, {
           getSnapshot: () => Effect.succeed(snapshot),
         }),
       ),
@@ -170,7 +170,7 @@ describe("CheckpointDiffQueryLive", () => {
     const layer = CheckpointDiffQueryLive.pipe(
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
       Layer.provideMerge(
-        Layer.succeed(ProjectionSnapshotQuery, {
+        Layer.succeed(ReadModelQuery, {
           getSnapshot: () =>
             Effect.succeed({
               snapshotSequence: 0,

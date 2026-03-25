@@ -13,6 +13,7 @@ import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor"
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor";
 import { OrchestrationProjectionPipelineLive } from "./orchestration/Layers/ProjectionPipeline";
+import { OrchestrationReadModelQueryLive } from "./orchestration/Layers/ReadModelQuery";
 import { OrchestrationProjectionSnapshotQueryLive } from "./orchestration/Layers/ProjectionSnapshotQuery";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus";
@@ -74,14 +75,18 @@ export function makeServerRuntimeServicesLayer() {
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
   );
+  const readModelQueryLayer = OrchestrationReadModelQueryLive.pipe(
+    Layer.provideMerge(orchestrationLayer),
+  );
 
   const checkpointDiffQueryLayer = CheckpointDiffQueryLive.pipe(
-    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+    Layer.provideMerge(readModelQueryLayer),
     Layer.provideMerge(CheckpointStoreLive),
   );
 
   const runtimeServicesLayer = Layer.mergeAll(
     orchestrationLayer,
+    readModelQueryLayer,
     OrchestrationProjectionSnapshotQueryLive,
     CheckpointStoreLive,
     checkpointDiffQueryLayer,

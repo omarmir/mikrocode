@@ -32,6 +32,7 @@ import {
   MOBILE_WS_CHANNELS,
   MOBILE_WS_METHODS,
   type MobileServerNotification,
+  type MobileSnapshotInvalidation,
   type ConnectionStatus,
   type ApprovalResponseInput,
   type CreateDirectoryInput,
@@ -195,6 +196,7 @@ export function useBackendConnection() {
   const [serverNotifications, setServerNotifications] = useState<MobileServerNotification[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
+  const snapshotSequenceRef = useRef(0);
   const pendingRequestsRef = useRef<Map<string, PendingRequest>>(new Map());
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const socketListenerCleanupRef = useRef<(() => void) | null>(null);
@@ -289,6 +291,7 @@ export function useBackendConnection() {
     setPendingServerResponses({});
     setServerNotifications([]);
     lastObservedPushSequenceRef.current = null;
+    snapshotSequenceRef.current = 0;
     setLastPushSequence(null);
 
     const currentSocket = socketRef.current;
@@ -332,6 +335,7 @@ export function useBackendConnection() {
   );
 
   const commitSnapshot = useStableEvent((nextSnapshot: OrchestrationReadModel) => {
+    snapshotSequenceRef.current = nextSnapshot.snapshotSequence;
     startTransition(() => {
       setSnapshot((current) => reconcileReadModel(current, nextSnapshot));
     });
@@ -375,8 +379,8 @@ export function useBackendConnection() {
 
     startTransition(() => {
       setServerConfig(nextConfig);
-      setSnapshot((current) => reconcileReadModel(current, nextSnapshot));
     });
+    commitSnapshot(nextSnapshot);
   });
 
   if (eventRefreshControllerRef.current === null) {
@@ -456,6 +460,15 @@ export function useBackendConnection() {
       startTransition(() => {
         setServerNotifications((current) => [...current, message.data as MobileServerNotification]);
       });
+      return;
+    }
+
+    if (message.channel === MOBILE_WS_CHANNELS.snapshotInvalidated) {
+      const payload = message.data as MobileSnapshotInvalidation;
+      if (snapshotSequenceRef.current >= payload.snapshotSequence) {
+        return;
+      }
+      scheduleSnapshotRefresh("event");
       return;
     }
 

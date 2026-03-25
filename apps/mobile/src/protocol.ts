@@ -7,6 +7,7 @@ import type {
   GitRunStackedActionResult,
   GitStatusResult,
   OrchestrationReadModel,
+  OrchestrationSnapshotInvalidationPayload,
   ProjectCloneGitRepositoryResult,
   ProjectEntry,
   ProviderModelOptions,
@@ -52,6 +53,7 @@ export const MOBILE_WS_METHODS = {
 
 export const MOBILE_WS_CHANNELS = {
   domainEvent: "orchestration.domainEvent",
+  snapshotInvalidated: "orchestration.snapshotInvalidated",
   serverConfigUpdated: "server.configUpdated",
   serverNotification: "server.notification",
   serverWelcome: "server.welcome",
@@ -173,6 +175,7 @@ export type ConfirmNotificationDeliveryInput = ServerConfirmNotificationDelivery
 export type SendTestNotificationInput = ServerSendTestNotificationInput;
 export type SendTestNotificationResult = ServerSendTestNotificationResult;
 export type MobileServerNotification = ServerAppNotification;
+export type MobileSnapshotInvalidation = OrchestrationSnapshotInvalidationPayload;
 
 export interface MobileBackendState {
   readonly snapshot: OrchestrationReadModel | null;

@@ -6,7 +6,7 @@ import {
 } from "@t3tools/contracts";
 import { Effect, Layer, Schema } from "effect";
 
-import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ReadModelQuery } from "../../orchestration/Services/ReadModelQuery.ts";
 import { CheckpointInvariantError, CheckpointUnavailableError } from "../Errors.ts";
 import { checkpointRefForThreadTurn, resolveThreadWorkspaceCwd } from "../Utils.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
@@ -18,7 +18,7 @@ import {
 const isTurnDiffResult = Schema.is(OrchestrationGetTurnDiffResult);
 
 const make = Effect.gen(function* () {
-  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const readModelQuery = yield* ReadModelQuery;
   const checkpointStore = yield* CheckpointStore;
 
   const getTurnDiff: CheckpointDiffQueryShape["getTurnDiff"] = (input) =>
@@ -41,7 +41,7 @@ const make = Effect.gen(function* () {
         return emptyDiff;
       }
 
-      const snapshot = yield* projectionSnapshotQuery.getSnapshot();
+      const snapshot = yield* readModelQuery.getSnapshot();
       const thread = snapshot.threads.find((entry) => entry.id === input.threadId);
       if (!thread) {
         return yield* new CheckpointInvariantError({

@@ -25,7 +25,15 @@ export const ORCHESTRATION_WS_METHODS = {
 
 export const ORCHESTRATION_WS_CHANNELS = {
   domainEvent: "orchestration.domainEvent",
+  snapshotInvalidated: "orchestration.snapshotInvalidated",
 } as const;
+
+export const OrchestrationSnapshotInvalidationPayload = Schema.Struct({
+  snapshotSequence: NonNegativeInt,
+  threadIds: Schema.Array(ThreadId).pipe(Schema.withDecodingDefault(() => [])),
+});
+export type OrchestrationSnapshotInvalidationPayload =
+  typeof OrchestrationSnapshotInvalidationPayload.Type;
 
 export const ProviderKind = Schema.Literals(["codex", "claudeAgent"]);
 export type ProviderKind = typeof ProviderKind.Type;

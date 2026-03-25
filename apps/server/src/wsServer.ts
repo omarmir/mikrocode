@@ -59,7 +59,7 @@ import { GitManager } from "./git/Services/GitManager.ts";
 import { GitService } from "./git/Services/GitService.ts";
 import { listWorkspaceDirectories, searchWorkspaceEntries } from "./workspaceEntries";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
-import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
+import { ReadModelQuery } from "./orchestration/Services/ReadModelQuery";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor";
 import { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
@@ -82,6 +82,10 @@ import { expandHomePath } from "./os-jank.ts";
 import { buildServerConversationCapabilities } from "./serverConversationCapabilities.ts";
 import { makeServerPushBus } from "./wsServer/pushBus.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
+import {
+  buildSnapshotInvalidation,
+  createSnapshotInvalidationBuffer,
+} from "./wsServer/snapshotInvalidationBuffer.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 import { NotificationSettingsService } from "./notifications/Services/NotificationSettings.ts";
 
@@ -190,7 +194,7 @@ const decodeWebSocketRequest = decodeJsonResult(WebSocketRequest);
 
 export type ServerCoreRuntimeServices =
   | OrchestrationEngineService
-  | ProjectionSnapshotQuery
+  | ReadModelQuery
   | CheckpointDiffQuery
   | OrchestrationReactor
   | ProviderService
@@ -233,6 +237,8 @@ const APP_NOTIFICATION_CONFIRM_TIMEOUT_MS = 2_500;
 const MAX_TRACKED_TERMINAL_TURN_NOTIFICATIONS = 5_000;
 const PUSHOVER_MESSAGES_URL = "https://api.pushover.net/1/messages.json";
 const PUSHOVER_MESSAGE_MAX_CHARS = 1_024;
+const SNAPSHOT_INVALIDATION_WINDOW_MS = 75;
+const SNAPSHOT_INVALIDATION_MAX_WAIT_MS = 150;
 
 function truncateNotificationText(input: string, maxChars: number): string {
   const trimmed = input.trim();
@@ -544,6 +550,28 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const pushBus = yield* makeServerPushBus({ clients, logOutgoingPush });
   yield* readiness.markPushBusReady;
+  const runtimeServices = yield* Effect.services<
+    ServerRuntimeServices | ServerConfig | FileSystem.FileSystem | Path.Path
+  >();
+  const runPromise = Effect.runPromiseWith(runtimeServices);
+  const snapshotInvalidationBuffer = createSnapshotInvalidationBuffer({
+    windowMs: SNAPSHOT_INVALIDATION_WINDOW_MS,
+    maxWaitMs: SNAPSHOT_INVALIDATION_MAX_WAIT_MS,
+    onFlush: (payload) => {
+      void runPromise(
+        pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.snapshotInvalidated, payload).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("failed to publish snapshot invalidation", {
+              snapshotSequence: payload.snapshotSequence,
+              affectedThreadCount: payload.threadIds.length,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      );
+    },
+  });
+  yield* Effect.addFinalizer(() => Effect.sync(() => snapshotInvalidationBuffer.cancel()));
 
   const clearPendingNotificationAck = (notificationId: string) =>
     Ref.update(pendingNotificationAcks, (current) => {
@@ -925,7 +953,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const listenOptions = host ? { host, port } : { port };
   const orchestrationEngine = yield* OrchestrationEngineService;
-  const projectionReadModelQuery = yield* ProjectionSnapshotQuery;
+  const readModelQuery = yield* ReadModelQuery;
   const checkpointDiffQuery = yield* CheckpointDiffQuery;
   const orchestrationReactor = yield* OrchestrationReactor;
 
@@ -934,16 +962,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   yield* Scope.provide(
     Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
-      pushBus
-        .publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event)
-        .pipe(
-          Effect.tap(() =>
-            Scope.provide(
-              maybeDeliverDomainNotification(event).pipe(Effect.forkScoped, Effect.asVoid),
-              subscriptionsScope,
-            ),
+      Effect.sync(() => {
+        snapshotInvalidationBuffer.push(buildSnapshotInvalidation(event));
+      }).pipe(
+        Effect.tap(() =>
+          Scope.provide(
+            maybeDeliverDomainNotification(event).pipe(Effect.forkScoped, Effect.asVoid),
+            subscriptionsScope,
           ),
         ),
+      ),
     ).pipe(Effect.forkScoped),
     subscriptionsScope,
   );
@@ -972,7 +1000,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   if (autoBootstrapProjectFromCwd) {
     yield* Effect.gen(function* () {
-      const snapshot = yield* projectionReadModelQuery.getSnapshot();
+      const snapshot = yield* readModelQuery.getSnapshot();
       const existingProject = snapshot.projects.find(
         (project) => project.workspaceRoot === cwd && project.deletedAt === null,
       );
@@ -1030,11 +1058,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     );
   }
 
-  const runtimeServices = yield* Effect.services<
-    ServerRuntimeServices | ServerConfig | FileSystem.FileSystem | Path.Path
-  >();
-  const runPromise = Effect.runPromiseWith(runtimeServices);
-
   yield* NodeHttpServer.make(() => httpServer, listenOptions).pipe(
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "httpServerListen", cause })),
   );
@@ -1047,7 +1070,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const routeRequest = Effect.fnUntraced(function* (_ws: WebSocket, request: WebSocketRequest) {
     switch (request.body._tag) {
       case ORCHESTRATION_WS_METHODS.getSnapshot:
-        return yield* projectionReadModelQuery.getSnapshot();
+        return yield* readModelQuery.getSnapshot();
       case ORCHESTRATION_WS_METHODS.dispatchCommand: {
         const normalizedCommand = yield* normalizeDispatchCommand({
           command: request.body.command,
@@ -1215,7 +1238,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         };
       case WS_METHODS.serverGetConversationCapabilities: {
         const body = stripRequestTag(request.body);
-        const snapshot = yield* projectionReadModelQuery.getSnapshot();
+        const snapshot = yield* readModelQuery.getSnapshot();
         const thread = snapshot.threads.find(
           (entry) => entry.id === body.threadId && entry.deletedAt === null,
         );

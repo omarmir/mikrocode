@@ -24,6 +24,7 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -2628,11 +2629,32 @@ function AppShellContent() {
       }),
     [floatingPanelWidth, settingsTranslateX],
   );
+  const deferredSnapshot = useDeferredValue(snapshot);
+  const deferredServerConfig = useDeferredValue(serverConfig);
+  const deferredLastPushSequence = useDeferredValue(lastPushSequence);
 
-  const allProjects = useMemo(() => sortProjects(snapshot?.projects ?? []), [snapshot?.projects]);
+  const activeProjects = useMemo(
+    () => sortProjects(snapshot?.projects ?? []),
+    [snapshot?.projects],
+  );
   const pendingServerResponseThreadIdSet = useMemo(
     () => new Set(pendingServerResponseThreadIds),
     [pendingServerResponseThreadIds],
+  );
+  const activeProjectIds = useMemo(
+    () => new Set(activeProjects.map((project) => project.id)),
+    [activeProjects],
+  );
+  const activeThreads = useMemo(
+    () =>
+      sortThreads(snapshot?.threads ?? []).filter((thread) =>
+        activeProjectIds.has(thread.projectId),
+      ),
+    [snapshot?.threads, activeProjectIds],
+  );
+  const allProjects = useMemo(
+    () => sortProjects(deferredSnapshot?.projects ?? []),
+    [deferredSnapshot?.projects],
   );
   const visibleProjectIds = useMemo(
     () => new Set(allProjects.map((project) => project.id)),
@@ -2640,24 +2662,28 @@ function AppShellContent() {
   );
   const allThreads = useMemo(
     () =>
-      sortThreads(snapshot?.threads ?? []).filter((thread) =>
+      sortThreads(deferredSnapshot?.threads ?? []).filter((thread) =>
         visibleProjectIds.has(thread.projectId),
       ),
-    [snapshot?.threads, visibleProjectIds],
+    [deferredSnapshot?.threads, visibleProjectIds],
   );
   const recentThreads = useMemo(
     () => allThreads.filter((thread) => !hiddenRecentThreadIds.includes(thread.id)).slice(0, 8),
     [allThreads, hiddenRecentThreadIds],
   );
   const selectedThread = useMemo(
-    () => allThreads.find((thread) => thread.id === selectedThreadId) ?? null,
-    [allThreads, selectedThreadId],
+    () => activeThreads.find((thread) => thread.id === selectedThreadId) ?? null,
+    [activeThreads, selectedThreadId],
   );
   const effectiveProjectId =
-    selectedThread?.projectId ?? selectedProjectId ?? allProjects[0]?.id ?? null;
+    selectedThread?.projectId ?? selectedProjectId ?? activeProjects[0]?.id ?? null;
   const selectedProject = useMemo(
     () => allProjects.find((project) => project.id === effectiveProjectId) ?? null,
     [allProjects, effectiveProjectId],
+  );
+  const activeSelectedProject = useMemo(
+    () => activeProjects.find((project) => project.id === effectiveProjectId) ?? null,
+    [activeProjects, effectiveProjectId],
   );
   const selectedProjectThreads = useMemo(
     () => (selectedProject ? sortThreads(allThreads, selectedProject.id) : []),
@@ -2718,14 +2744,18 @@ function AppShellContent() {
   const draft = selectedThread ? (threadDrafts[selectedThread.id] ?? "") : "";
   const draftAttachments = selectedThread ? (threadDraftAttachments[selectedThread.id] ?? []) : [];
   const isConnected = status === "connected";
-  const providers = serverConfig?.providers ?? [];
-  const notificationsEnabled = serverConfig?.notifications.enabled ?? true;
-  const notificationsConfigured = serverConfig?.notifications.pushover.configured ?? false;
+  const providers = deferredServerConfig?.providers ?? [];
+  const notificationsEnabled = deferredServerConfig?.notifications.enabled ?? true;
+  const notificationsConfigured = deferredServerConfig?.notifications.pushover.configured ?? false;
   const supportsDeviceNotifications = !(
     Platform.OS === "android" && Constants.appOwnership === ANDROID_EXPO_GO_APP_OWNERSHIP
   );
   const serverDirectoryHint =
-    serverConfig?.cwd ?? welcome?.cwd ?? selectedProject?.workspaceRoot ?? "";
+    deferredServerConfig?.cwd ??
+    welcome?.cwd ??
+    activeSelectedProject?.workspaceRoot ??
+    selectedProject?.workspaceRoot ??
+    "";
   const selectedThreadConversationId = selectedThread?.id ?? null;
   const selectedConversationProvider = resolveProviderForThread(selectedThread);
   const currentModelOptions =
@@ -2733,7 +2763,10 @@ function AppShellContent() {
       ? conversationCapabilities.models
       : [];
   const selectedWorkspaceRoot =
-    selectedThread?.worktreePath ?? selectedProject?.workspaceRoot ?? null;
+    selectedThread?.worktreePath ??
+    activeSelectedProject?.workspaceRoot ??
+    selectedProject?.workspaceRoot ??
+    null;
   const selectedReasoningOptions: ReadonlyArray<ProviderReasoningEffort> =
     selectedConversationProvider === "codex"
       ? CODEX_REASONING_EFFORT_OPTIONS
@@ -2788,7 +2821,8 @@ function AppShellContent() {
             ? "planning"
             : "executing";
 
-  const snapshotSequenceLabel = lastPushSequence === null ? "--" : `${lastPushSequence}`;
+  const snapshotSequenceLabel =
+    deferredLastPushSequence === null ? "--" : `${deferredLastPushSequence}`;
   const homeSubtitle = selectedProject
     ? `${selectedProject.title} mounted / ${selectedProjectThreads.length} sessions`
     : "Harness + CLI status";
@@ -3653,7 +3687,7 @@ function AppShellContent() {
   };
 
   const handleCreateConversation = async (projectOverride?: OrchestrationProject | null) => {
-    const project = projectOverride ?? selectedProject;
+    const project = projectOverride ?? selectedProject ?? activeSelectedProject;
     if (!project) {
       return;
     }
@@ -3693,7 +3727,7 @@ function AppShellContent() {
 
   const handleSelectProject = (projectId: string) => {
     setSelectedProjectId(projectId);
-    const activeThread = allThreads.find((thread) => thread.id === selectedThreadId) ?? null;
+    const activeThread = activeThreads.find((thread) => thread.id === selectedThreadId) ?? null;
     if (activeThread?.projectId !== projectId) {
       setSelectedThreadId(null);
     }
@@ -3732,7 +3766,7 @@ function AppShellContent() {
   };
 
   const handleDeleteProject = async (projectId: string) => {
-    const activeThread = allThreads.find((thread) => thread.id === selectedThreadId) ?? null;
+    const activeThread = activeThreads.find((thread) => thread.id === selectedThreadId) ?? null;
     if (selectedProjectId === projectId) {
       setSelectedProjectId(null);
     }
