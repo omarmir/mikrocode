@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { OrchestrationMessage } from "@t3tools/contracts";
 
-import { buildConversationRenderItems } from "./conversationRenderItems";
+import {
+  buildConversationRenderItems,
+  getConversationRenderItemType,
+} from "./conversationRenderItems";
 
 function createMessage(input: {
   readonly id: string;
@@ -108,5 +111,43 @@ describe("buildConversationRenderItems", () => {
     });
 
     expect(secondPass[0]).toBe(firstPass[0]);
+  });
+
+  it("emits granular recycle types for different message row shapes", () => {
+    expect(
+      getConversationRenderItemType({
+        kind: "message",
+        id: "user-message",
+        message: createMessage({ id: "user-message", role: "user" }),
+        badgeLabel: null,
+        highlighted: false,
+        expandable: false,
+        expanded: true,
+        isMetaRevealed: false,
+      }),
+    ).toBe("message-user");
+
+    expect(
+      getConversationRenderItemType({
+        kind: "message",
+        id: "assistant-message",
+        message: createMessage({ id: "assistant-message", role: "assistant" }),
+        badgeLabel: null,
+        highlighted: false,
+        expandable: true,
+        expanded: false,
+        isMetaRevealed: false,
+      }),
+    ).toBe("message-assistant-collapsed");
+
+    expect(
+      getConversationRenderItemType({
+        kind: "queued",
+        id: "queued:assistant-message",
+        message: createMessage({ id: "assistant-message", role: "assistant" }),
+        badgeLabel: "Queued 1",
+        isMetaRevealed: false,
+      }),
+    ).toBe("message-queued");
   });
 });

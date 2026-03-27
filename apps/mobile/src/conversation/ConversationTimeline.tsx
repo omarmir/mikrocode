@@ -1,5 +1,10 @@
-import { FlashList, type FlashListRef } from "@shopify/flash-list";
-import { memo, type RefObject, useCallback, useMemo } from "react";
+import {
+  FlashList,
+  type FlashListRef,
+  type ListRenderItemInfo,
+  type RenderTarget,
+} from "@shopify/flash-list";
+import { memo, type RefObject, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   Animated,
   Platform,
@@ -21,6 +26,7 @@ import {
 import {
   ConversationMessageRow,
   ConversationQueuedRow,
+  type ConversationRowRenderMode,
   EmptyConversationRow,
   ProposedPlanRow,
   ThreadDiffRow,
@@ -30,11 +36,16 @@ import {
 import type { HydratedTurnDiffState } from "./renderUtils";
 import { useAppThemeContext } from "../appThemeContext";
 
-const FLASH_LIST_DRAW_DISTANCE = 600;
+const FLASH_LIST_DRAW_DISTANCE = 420;
+const FLASH_LIST_MAX_ITEMS_IN_RECYCLE_POOL = 24;
 const CONVERSATION_TIMELINE_LIST_KEY_FALLBACK = "empty-thread";
 const CONVERSATION_TIMELINE_MAINTAIN_VISIBLE_POSITION = {
   startRenderingFromBottom: true,
 } as const;
+
+function resolveConversationRowRenderMode(target: RenderTarget): ConversationRowRenderMode {
+  return target === "Measurement" ? "measurement" : "visible";
+}
 
 const ConversationTimelineImpl = memo(function ConversationTimeline({
   expandedActivityGroupIds,
@@ -96,10 +107,16 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
   readonly waitingIndicatorMotion: Animated.Value;
 }) {
   const { styles, theme } = useAppThemeContext();
+  const previousRenderItemsRef = useRef<ReadonlyArray<ConversationRenderItem>>([]);
+  const previousThreadConversationIdRef = useRef<string | null>(null);
+  const previousRenderItems =
+    previousThreadConversationIdRef.current === selectedThreadConversationId
+      ? previousRenderItemsRef.current
+      : undefined;
   const renderItems = useMemo(
     () =>
       buildConversationRenderItems({
-        previousItems: undefined,
+        previousItems: previousRenderItems,
         timelineEntries,
         pinnedQueuedMessages,
         showWaitingIndicator,
@@ -120,14 +137,20 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
       highlightedAssistantMessageId,
       hydratedTurnDiffs,
       pinnedQueuedMessages,
+      previousRenderItems,
       revealedMessageId,
       selectedThreadConversationId,
       showWaitingIndicator,
       timelineEntries,
     ],
   );
+  useEffect(() => {
+    previousRenderItemsRef.current = renderItems;
+    previousThreadConversationIdRef.current = selectedThreadConversationId;
+  }, [renderItems, selectedThreadConversationId]);
   const renderConversationItem = useCallback(
-    ({ item }: { readonly item: ConversationRenderItem }) => {
+    ({ item, target }: ListRenderItemInfo<ConversationRenderItem>) => {
+      const renderMode = resolveConversationRowRenderMode(target);
       switch (item.kind) {
         case "empty":
           return <EmptyConversationRow />;
@@ -143,6 +166,7 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
               onLongPress={requestHandlePinnedQueuedMessageLongPress}
               onRevealMeta={requestRevealMessageMeta}
               onToggleExpanded={requestToggleAssistantMessageExpanded}
+              renderMode={renderMode}
               resolveAttachmentImageUrl={resolveAttachmentImageUrl}
             />
           );
@@ -158,7 +182,7 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
             />
           );
         case "plan":
-          return <ProposedPlanRow item={item} />;
+          return <ProposedPlanRow item={item} renderMode={renderMode} />;
         case "message":
           return (
             <ConversationMessageRow
@@ -167,6 +191,7 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
               onLongPress={requestHandleMessageLongPress}
               onRevealMeta={requestRevealMessageMeta}
               onToggleExpanded={requestToggleAssistantMessageExpanded}
+              renderMode={renderMode}
               resolveAttachmentImageUrl={resolveAttachmentImageUrl}
             />
           );
@@ -199,10 +224,12 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
       keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
       keyboardShouldPersistTaps="handled"
       keyExtractor={(item) => item.id}
+      maxItemsInRecyclePool={FLASH_LIST_MAX_ITEMS_IN_RECYCLE_POOL}
       maintainVisibleContentPosition={CONVERSATION_TIMELINE_MAINTAIN_VISIBLE_POSITION}
       onContentSizeChange={handleConversationContentSizeChange}
       onLayout={handleConversationLayout}
       onScroll={handleConversationScroll}
+      removeClippedSubviews={Platform.OS === "android"}
       refreshControl={
         <RefreshControl
           onRefresh={handlePullToRefresh}

@@ -29,6 +29,8 @@ import {
   summarizeThreadDiffPreview,
 } from "./renderUtils";
 
+export type ConversationRowRenderMode = "measurement" | "visible";
+
 function TimelineCodeBlock({
   language,
   value,
@@ -99,13 +101,22 @@ export const WaitingIndicatorRow = memo(function WaitingIndicatorRow({
 });
 
 export const ProposedPlanRow = memo(
-  function ProposedPlanRow({ item }: { readonly item: ConversationPlanRowItem }) {
+  function ProposedPlanRow({
+    item,
+    renderMode,
+  }: {
+    readonly item: ConversationPlanRowItem;
+    readonly renderMode: ConversationRowRenderMode;
+  }) {
     const { styles, theme } = useAppThemeContext();
-    const cacheKey = getMessageMarkdownCacheKey({
-      themeKey: theme.key,
-      messageId: item.proposedPlan.id,
-      updatedAt: item.proposedPlan.updatedAt,
-    });
+    const cacheKey =
+      renderMode === "visible"
+        ? getMessageMarkdownCacheKey({
+            themeKey: theme.key,
+            messageId: item.proposedPlan.id,
+            updatedAt: item.proposedPlan.updatedAt,
+          })
+        : null;
 
     return (
       <View style={styles.proposedPlanCard}>
@@ -118,11 +129,19 @@ export const ProposedPlanRow = memo(
           </View>
           <Feather color={theme.accent} name="file-text" size={15} />
         </View>
-        <CachedMarkdownMessage cacheKey={cacheKey} value={item.proposedPlan.planMarkdown} />
+        {cacheKey ? (
+          <CachedMarkdownMessage cacheKey={cacheKey} value={item.proposedPlan.planMarkdown} />
+        ) : (
+          <Text selectable style={[styles.messageText, styles.messageTextAssistant]}>
+            {item.proposedPlan.planMarkdown}
+          </Text>
+        )}
       </View>
     );
   },
-  (previousProps, nextProps) => previousProps.item.proposedPlan === nextProps.item.proposedPlan,
+  (previousProps, nextProps) =>
+    previousProps.item.proposedPlan === nextProps.item.proposedPlan &&
+    previousProps.renderMode === nextProps.renderMode,
 );
 
 function buildMessageAttachmentPreviews(
@@ -151,6 +170,7 @@ type BaseMessageRowProps = {
   readonly messageMetaOpacity: Animated.Value;
   readonly onRevealMeta: (messageId: string) => void;
   readonly onToggleExpanded: (messageId: string) => void;
+  readonly renderMode: ConversationRowRenderMode;
   readonly resolveAttachmentImageUrl: (attachment: ChatAttachment) => string | null;
 };
 
@@ -161,6 +181,7 @@ export const ConversationMessageRow = memo(
     onLongPress,
     onRevealMeta,
     onToggleExpanded,
+    renderMode,
     resolveAttachmentImageUrl,
   }: BaseMessageRowProps & {
     readonly item: ConversationMessageRowItem;
@@ -176,17 +197,121 @@ export const ConversationMessageRow = memo(
       [item.expandable, item.expanded, item.message.text],
     );
     const messageAttachmentPreviews = useMemo(
-      () => buildMessageAttachmentPreviews(item.message.attachments, resolveAttachmentImageUrl),
-      [item.message.attachments, resolveAttachmentImageUrl],
+      () =>
+        renderMode === "measurement"
+          ? []
+          : buildMessageAttachmentPreviews(item.message.attachments, resolveAttachmentImageUrl),
+      [item.message.attachments, renderMode, resolveAttachmentImageUrl],
     );
     const markdownCacheKey =
-      item.message.role === "assistant" && !item.message.streaming
+      renderMode === "visible" && item.message.role === "assistant" && !item.message.streaming
         ? getMessageMarkdownCacheKey({
             themeKey: theme.key,
             messageId: item.message.id,
             updatedAt: item.message.updatedAt,
           })
         : null;
+    const messageBody = (
+      <View
+        style={[
+          styles.messageRow,
+          item.message.role === "user" ? styles.messageRowUser : styles.messageRowAssistant,
+          item.highlighted && styles.messageRowAssistantLatest,
+        ]}
+      >
+        <View style={styles.messageBody}>
+          {item.badgeLabel ? (
+            <View style={styles.messageQueuedBadge}>
+              <Text style={styles.messageQueuedBadgeText}>{item.badgeLabel}</Text>
+            </View>
+          ) : null}
+          {hasMessageText || item.message.streaming ? (
+            hasMessageText ? (
+              item.message.role === "assistant" ? (
+                item.message.streaming ? (
+                  <Text selectable style={[styles.messageText, styles.messageTextAssistant]}>
+                    {item.message.text || "Streaming..."}
+                  </Text>
+                ) : renderMode === "measurement" ? (
+                  <Text selectable style={[styles.messageText, styles.messageTextAssistant]}>
+                    {assistantPreviewText}
+                  </Text>
+                ) : item.expandable && !item.expanded ? (
+                  <>
+                    <Text style={[styles.messageText, styles.messageTextAssistant]}>
+                      {assistantPreviewText}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        onToggleExpanded(item.message.id);
+                      }}
+                      style={styles.messageExpandButton}
+                    >
+                      <Text style={styles.messageExpandButtonLabel}>Expand</Text>
+                    </Pressable>
+                  </>
+                ) : (
+                  <>
+                    <CachedMarkdownMessage cacheKey={markdownCacheKey} value={item.message.text} />
+                    {item.expandable ? (
+                      <Pressable
+                        onPress={() => {
+                          onToggleExpanded(item.message.id);
+                        }}
+                        style={styles.messageExpandButton}
+                      >
+                        <Text style={styles.messageExpandButtonLabel}>Collapse</Text>
+                      </Pressable>
+                    ) : null}
+                  </>
+                )
+              ) : (
+                <Text
+                  selectable
+                  style={[
+                    styles.messageText,
+                    item.message.role === "user"
+                      ? styles.messageTextUser
+                      : styles.messageTextAssistant,
+                  ]}
+                >
+                  {item.message.text}
+                </Text>
+              )
+            ) : (
+              <Text style={[styles.messageText, styles.messageTextAssistant]}>Streaming...</Text>
+            )
+          ) : null}
+
+          {messageAttachmentPreviews.length > 0 ? (
+            <View style={styles.messageAttachmentRow}>
+              {messageAttachmentPreviews.map((attachment) => (
+                <View key={attachment.id} style={styles.messageAttachmentTile}>
+                  <Image
+                    resizeMode="cover"
+                    source={{ uri: attachment.uri }}
+                    style={styles.messageAttachmentImage}
+                  />
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      </View>
+    );
+
+    if (renderMode === "measurement") {
+      return (
+        <View
+          style={[
+            styles.messageWrap,
+            item.message.role === "user" ? styles.messageWrapUser : styles.messageWrapAssistant,
+          ]}
+        >
+          {messageBody}
+        </View>
+      );
+    }
 
     return (
       <Pressable
@@ -202,91 +327,7 @@ export const ConversationMessageRow = memo(
           item.message.role === "user" ? styles.messageWrapUser : styles.messageWrapAssistant,
         ]}
       >
-        <View
-          style={[
-            styles.messageRow,
-            item.message.role === "user" ? styles.messageRowUser : styles.messageRowAssistant,
-            item.highlighted && styles.messageRowAssistantLatest,
-          ]}
-        >
-          <View style={styles.messageBody}>
-            {item.badgeLabel ? (
-              <View style={styles.messageQueuedBadge}>
-                <Text style={styles.messageQueuedBadgeText}>{item.badgeLabel}</Text>
-              </View>
-            ) : null}
-            {hasMessageText || item.message.streaming ? (
-              hasMessageText ? (
-                item.message.role === "assistant" ? (
-                  item.message.streaming ? (
-                    <Text selectable style={[styles.messageText, styles.messageTextAssistant]}>
-                      {item.message.text || "Streaming..."}
-                    </Text>
-                  ) : item.expandable && !item.expanded ? (
-                    <>
-                      <Text style={[styles.messageText, styles.messageTextAssistant]}>
-                        {assistantPreviewText}
-                      </Text>
-                      <Pressable
-                        onPress={() => {
-                          onToggleExpanded(item.message.id);
-                        }}
-                        style={styles.messageExpandButton}
-                      >
-                        <Text style={styles.messageExpandButtonLabel}>Expand</Text>
-                      </Pressable>
-                    </>
-                  ) : (
-                    <>
-                      <CachedMarkdownMessage
-                        cacheKey={markdownCacheKey}
-                        value={item.message.text}
-                      />
-                      {item.expandable ? (
-                        <Pressable
-                          onPress={() => {
-                            onToggleExpanded(item.message.id);
-                          }}
-                          style={styles.messageExpandButton}
-                        >
-                          <Text style={styles.messageExpandButtonLabel}>Collapse</Text>
-                        </Pressable>
-                      ) : null}
-                    </>
-                  )
-                ) : (
-                  <Text
-                    selectable
-                    style={[
-                      styles.messageText,
-                      item.message.role === "user"
-                        ? styles.messageTextUser
-                        : styles.messageTextAssistant,
-                    ]}
-                  >
-                    {item.message.text}
-                  </Text>
-                )
-              ) : (
-                <Text style={[styles.messageText, styles.messageTextAssistant]}>Streaming...</Text>
-              )
-            ) : null}
-
-            {messageAttachmentPreviews.length > 0 ? (
-              <View style={styles.messageAttachmentRow}>
-                {messageAttachmentPreviews.map((attachment) => (
-                  <View key={attachment.id} style={styles.messageAttachmentTile}>
-                    <Image
-                      resizeMode="cover"
-                      source={{ uri: attachment.uri }}
-                      style={styles.messageAttachmentImage}
-                    />
-                  </View>
-                ))}
-              </View>
-            ) : null}
-          </View>
-        </View>
+        {messageBody}
         {item.isMetaRevealed ? (
           <Animated.View
             style={[
@@ -313,6 +354,7 @@ export const ConversationMessageRow = memo(
     previousProps.item.expandable === nextProps.item.expandable &&
     previousProps.item.expanded === nextProps.item.expanded &&
     previousProps.item.isMetaRevealed === nextProps.item.isMetaRevealed &&
+    previousProps.renderMode === nextProps.renderMode &&
     previousProps.resolveAttachmentImageUrl === nextProps.resolveAttachmentImageUrl &&
     previousProps.messageMetaOpacity === nextProps.messageMetaOpacity,
 );
@@ -324,6 +366,7 @@ export const ConversationQueuedRow = memo(
     onLongPress,
     onRevealMeta,
     onToggleExpanded,
+    renderMode,
     resolveAttachmentImageUrl,
   }: BaseMessageRowProps & {
     readonly item: ConversationQueuedRowItem;
@@ -347,6 +390,7 @@ export const ConversationQueuedRow = memo(
         }}
         onRevealMeta={onRevealMeta}
         onToggleExpanded={onToggleExpanded}
+        renderMode={renderMode}
         resolveAttachmentImageUrl={resolveAttachmentImageUrl}
       />
     );
@@ -355,6 +399,7 @@ export const ConversationQueuedRow = memo(
     previousProps.item.message === nextProps.item.message &&
     previousProps.item.badgeLabel === nextProps.item.badgeLabel &&
     previousProps.item.isMetaRevealed === nextProps.item.isMetaRevealed &&
+    previousProps.renderMode === nextProps.renderMode &&
     previousProps.resolveAttachmentImageUrl === nextProps.resolveAttachmentImageUrl &&
     previousProps.messageMetaOpacity === nextProps.messageMetaOpacity,
 );

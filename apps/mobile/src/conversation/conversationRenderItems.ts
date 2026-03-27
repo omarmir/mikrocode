@@ -156,7 +156,30 @@ function buildDiffRowItem(input: {
 }
 
 export function getConversationRenderItemType(item: ConversationRenderItem) {
-  return item.kind;
+  switch (item.kind) {
+    case "message":
+      if (item.message.role === "user") {
+        return "message-user";
+      }
+      if (item.message.streaming) {
+        return "message-assistant-streaming";
+      }
+      return item.expandable && !item.expanded
+        ? "message-assistant-collapsed"
+        : "message-assistant";
+    case "queued":
+      return "message-queued";
+    case "activity-group":
+      return item.expanded ? "activity-group-expanded" : "activity-group";
+    case "diff":
+      return item.expanded ? "diff-expanded" : "diff";
+    case "plan":
+      return "plan";
+    case "waiting":
+      return "waiting";
+    case "empty":
+      return "empty";
+  }
 }
 
 export function buildConversationRenderItems(input: {
