@@ -13,6 +13,7 @@ import type {
   ConversationMessageRowItem,
   ConversationPlanRowItem,
   ConversationQueuedRowItem,
+  ConversationShowMoreHistoryRowItem,
 } from "./conversationRenderItems";
 import {
   DIFF_FILE_LINE_LIMIT,
@@ -66,6 +67,39 @@ export const EmptyConversationRow = memo(function EmptyConversationRow() {
     </View>
   );
 });
+
+export const ShowMoreHistoryRow = memo(
+  function ShowMoreHistoryRow({
+    item,
+    onPress,
+  }: {
+    readonly item: ConversationShowMoreHistoryRowItem;
+    readonly onPress: () => void;
+  }) {
+    const { styles } = useAppThemeContext();
+    const revealTurnLabel =
+      item.revealTurnCount === 1 ? "1 older turn" : `${item.revealTurnCount} older turns`;
+    const hiddenSummary =
+      item.hiddenTurnCount === item.revealTurnCount
+        ? `${item.hiddenEntryCount} older timeline items are hidden to keep scrolling fast.`
+        : `${item.hiddenTurnCount} older turns are hidden. Load the next ${revealTurnLabel}.`;
+
+    return (
+      <View style={styles.emptyConversation}>
+        <Text style={styles.sectionTitle}>Older messages hidden</Text>
+        <Text style={styles.helperText}>{hiddenSummary}</Text>
+        <Pressable onPress={onPress} style={styles.messageExpandButton}>
+          <Text style={styles.messageExpandButtonLabel}>{`Show ${revealTurnLabel}`}</Text>
+        </Pressable>
+      </View>
+    );
+  },
+  (previousProps, nextProps) =>
+    previousProps.item.hiddenEntryCount === nextProps.item.hiddenEntryCount &&
+    previousProps.item.hiddenTurnCount === nextProps.item.hiddenTurnCount &&
+    previousProps.item.revealTurnCount === nextProps.item.revealTurnCount &&
+    previousProps.onPress === nextProps.onPress,
+);
 
 export const WaitingIndicatorRow = memo(function WaitingIndicatorRow({
   label,

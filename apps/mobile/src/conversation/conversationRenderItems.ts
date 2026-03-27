@@ -54,6 +54,14 @@ export type ConversationPlanRowItem = {
   readonly proposedPlan: OrchestrationProposedPlan;
 };
 
+export type ConversationShowMoreHistoryRowItem = {
+  readonly kind: "show-more-history";
+  readonly id: "show-more-history";
+  readonly hiddenEntryCount: number;
+  readonly hiddenTurnCount: number;
+  readonly revealTurnCount: number;
+};
+
 export type ConversationWaitingRowItem = {
   readonly kind: "waiting";
   readonly id: "waiting-indicator";
@@ -70,6 +78,7 @@ export type ConversationRenderItem =
   | ConversationActivityGroupRowItem
   | ConversationDiffRowItem
   | ConversationPlanRowItem
+  | ConversationShowMoreHistoryRowItem
   | ConversationWaitingRowItem
   | ConversationEmptyRowItem;
 
@@ -131,6 +140,17 @@ function equalPlanRow(previousItem: ConversationPlanRowItem, nextItem: Conversat
   return previousItem.proposedPlan === nextItem.proposedPlan;
 }
 
+function equalShowMoreHistoryRow(
+  previousItem: ConversationShowMoreHistoryRowItem,
+  nextItem: ConversationShowMoreHistoryRowItem,
+) {
+  return (
+    previousItem.hiddenEntryCount === nextItem.hiddenEntryCount &&
+    previousItem.hiddenTurnCount === nextItem.hiddenTurnCount &&
+    previousItem.revealTurnCount === nextItem.revealTurnCount
+  );
+}
+
 function buildDiffRowItem(input: {
   readonly entry: ThreadDiffEntry;
   readonly expandedDiffIds: Readonly<Record<string, true>>;
@@ -175,6 +195,8 @@ export function getConversationRenderItemType(item: ConversationRenderItem) {
       return item.expanded ? "diff-expanded" : "diff";
     case "plan":
       return "plan";
+    case "show-more-history":
+      return "show-more-history";
     case "waiting":
       return "waiting";
     case "empty":
@@ -185,6 +207,11 @@ export function getConversationRenderItemType(item: ConversationRenderItem) {
 export function buildConversationRenderItems(input: {
   readonly previousItems?: ReadonlyArray<ConversationRenderItem>;
   readonly timelineEntries: ReadonlyArray<ThreadTimelineEntry>;
+  readonly hiddenHistorySummary?: {
+    readonly hiddenEntryCount: number;
+    readonly hiddenTurnCount: number;
+    readonly revealTurnCount: number;
+  } | null;
   readonly pinnedQueuedMessages: ReadonlyArray<PinnedConversationMessage>;
   readonly showWaitingIndicator: boolean;
   readonly highlightedAssistantMessageId: string | null;
@@ -198,6 +225,22 @@ export function buildConversationRenderItems(input: {
 }): ReadonlyArray<ConversationRenderItem> {
   const items: ConversationRenderItem[] = [];
   const previousItemsById = new Map((input.previousItems ?? []).map((item) => [item.id, item]));
+
+  if (input.hiddenHistorySummary && input.hiddenHistorySummary.hiddenTurnCount > 0) {
+    items.push(
+      reuseItemIfUnchanged(
+        previousItemsById,
+        {
+          kind: "show-more-history",
+          id: "show-more-history",
+          hiddenEntryCount: input.hiddenHistorySummary.hiddenEntryCount,
+          hiddenTurnCount: input.hiddenHistorySummary.hiddenTurnCount,
+          revealTurnCount: input.hiddenHistorySummary.revealTurnCount,
+        } satisfies ConversationShowMoreHistoryRowItem,
+        equalShowMoreHistoryRow,
+      ),
+    );
+  }
 
   for (const entry of input.timelineEntries) {
     if (entry.kind === "activityGroup") {

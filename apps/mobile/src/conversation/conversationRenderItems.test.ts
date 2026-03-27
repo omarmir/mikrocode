@@ -29,6 +29,7 @@ describe("buildConversationRenderItems", () => {
     expect(
       buildConversationRenderItems({
         timelineEntries: [],
+        hiddenHistorySummary: null,
         pinnedQueuedMessages: [],
         showWaitingIndicator: false,
         highlightedAssistantMessageId: null,
@@ -53,6 +54,7 @@ describe("buildConversationRenderItems", () => {
           message: createMessage({ id: "message-1" }),
         },
       ],
+      hiddenHistorySummary: null,
       pinnedQueuedMessages: [
         {
           badgeLabel: "Queued 1",
@@ -84,6 +86,7 @@ describe("buildConversationRenderItems", () => {
     ];
     const firstPass = buildConversationRenderItems({
       timelineEntries,
+      hiddenHistorySummary: null,
       pinnedQueuedMessages: [],
       showWaitingIndicator: false,
       highlightedAssistantMessageId: null,
@@ -98,6 +101,7 @@ describe("buildConversationRenderItems", () => {
     const secondPass = buildConversationRenderItems({
       previousItems: firstPass,
       timelineEntries,
+      hiddenHistorySummary: null,
       pinnedQueuedMessages: [],
       showWaitingIndicator: false,
       highlightedAssistantMessageId: null,
@@ -149,5 +153,35 @@ describe("buildConversationRenderItems", () => {
         isMetaRevealed: false,
       }),
     ).toBe("message-queued");
+  });
+
+  it("prepends a show-more row when older history is hidden", () => {
+    const items = buildConversationRenderItems({
+      timelineEntries: [
+        {
+          kind: "message",
+          id: "message-1",
+          createdAt: "2026-03-24T00:00:00.000Z",
+          message: createMessage({ id: "message-1" }),
+        },
+      ],
+      hiddenHistorySummary: {
+        hiddenEntryCount: 12,
+        hiddenTurnCount: 6,
+        revealTurnCount: 6,
+      },
+      pinnedQueuedMessages: [],
+      showWaitingIndicator: false,
+      highlightedAssistantMessageId: null,
+      expandedAssistantMessageIds: {},
+      expandedActivityGroupIds: {},
+      expandedDiffIds: {},
+      expandedDiffFileIds: {},
+      hydratedTurnDiffs: {},
+      revealedMessageId: null,
+      selectedThreadConversationId: "thread-1",
+    });
+
+    expect(items.map((item) => item.kind)).toEqual(["show-more-history", "message"]);
   });
 });

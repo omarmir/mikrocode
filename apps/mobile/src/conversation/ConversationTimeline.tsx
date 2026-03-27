@@ -4,7 +4,7 @@ import {
   type ListRenderItemInfo,
   type RenderTarget,
 } from "@shopify/flash-list";
-import { memo, type RefObject, useCallback, useEffect, useMemo, useRef } from "react";
+import { memo, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   Platform,
@@ -29,15 +29,19 @@ import {
   type ConversationRowRenderMode,
   EmptyConversationRow,
   ProposedPlanRow,
+  ShowMoreHistoryRow,
   ThreadDiffRow,
   TimelineActivityGroupRow,
   WaitingIndicatorRow,
 } from "./conversationRows";
 import type { HydratedTurnDiffState } from "./renderUtils";
 import { useAppThemeContext } from "../appThemeContext";
+import { buildConversationTimelineWindow } from "./timelineWindow";
 
 const FLASH_LIST_DRAW_DISTANCE = 420;
 const FLASH_LIST_MAX_ITEMS_IN_RECYCLE_POOL = 24;
+const INITIAL_VISIBLE_CONVERSATION_TURN_COUNT = 10;
+const CONVERSATION_TURN_REVEAL_BATCH_SIZE = 10;
 const CONVERSATION_TIMELINE_LIST_KEY_FALLBACK = "empty-thread";
 const CONVERSATION_TIMELINE_MAINTAIN_VISIBLE_POSITION = {
   startRenderingFromBottom: true,
@@ -107,8 +111,21 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
   readonly waitingIndicatorMotion: Animated.Value;
 }) {
   const { styles, theme } = useAppThemeContext();
+  const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_CONVERSATION_TURN_COUNT);
   const previousRenderItemsRef = useRef<ReadonlyArray<ConversationRenderItem>>([]);
   const previousThreadConversationIdRef = useRef<string | null>(null);
+  const effectiveVisibleTurnCount =
+    previousThreadConversationIdRef.current === selectedThreadConversationId
+      ? visibleTurnCount
+      : INITIAL_VISIBLE_CONVERSATION_TURN_COUNT;
+  const timelineWindow = useMemo(
+    () =>
+      buildConversationTimelineWindow({
+        timelineEntries,
+        visibleTurnCount: effectiveVisibleTurnCount,
+      }),
+    [effectiveVisibleTurnCount, timelineEntries],
+  );
   const previousRenderItems =
     previousThreadConversationIdRef.current === selectedThreadConversationId
       ? previousRenderItemsRef.current
@@ -117,7 +134,18 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
     () =>
       buildConversationRenderItems({
         previousItems: previousRenderItems,
-        timelineEntries,
+        timelineEntries: timelineWindow.visibleTimelineEntries,
+        hiddenHistorySummary:
+          timelineWindow.hiddenTurnCount > 0
+            ? {
+                hiddenEntryCount: timelineWindow.hiddenEntryCount,
+                hiddenTurnCount: timelineWindow.hiddenTurnCount,
+                revealTurnCount: Math.min(
+                  CONVERSATION_TURN_REVEAL_BATCH_SIZE,
+                  timelineWindow.hiddenTurnCount,
+                ),
+              }
+            : null,
         pinnedQueuedMessages,
         showWaitingIndicator,
         highlightedAssistantMessageId,
@@ -141,19 +169,29 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
       revealedMessageId,
       selectedThreadConversationId,
       showWaitingIndicator,
-      timelineEntries,
+      timelineWindow.hiddenEntryCount,
+      timelineWindow.hiddenTurnCount,
+      timelineWindow.visibleTimelineEntries,
     ],
   );
   useEffect(() => {
     previousRenderItemsRef.current = renderItems;
     previousThreadConversationIdRef.current = selectedThreadConversationId;
   }, [renderItems, selectedThreadConversationId]);
+  useEffect(() => {
+    setVisibleTurnCount(INITIAL_VISIBLE_CONVERSATION_TURN_COUNT);
+  }, [selectedThreadConversationId]);
+  const handleRevealOlderTurns = useCallback(() => {
+    setVisibleTurnCount((current) => current + CONVERSATION_TURN_REVEAL_BATCH_SIZE);
+  }, []);
   const renderConversationItem = useCallback(
     ({ item, target }: ListRenderItemInfo<ConversationRenderItem>) => {
       const renderMode = resolveConversationRowRenderMode(target);
       switch (item.kind) {
         case "empty":
           return <EmptyConversationRow />;
+        case "show-more-history":
+          return <ShowMoreHistoryRow item={item} onPress={handleRevealOlderTurns} />;
         case "waiting":
           return (
             <WaitingIndicatorRow label={waitingIndicatorLabel} motion={waitingIndicatorMotion} />
@@ -200,6 +238,7 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
     [
       messageMetaOpacity,
       requestExpandDiffFile,
+      handleRevealOlderTurns,
       requestHandleMessageLongPress,
       requestHandlePinnedQueuedMessageLongPress,
       requestRevealMessageMeta,
