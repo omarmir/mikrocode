@@ -39,6 +39,7 @@
     "react-native-reanimated-table": "0.0.2",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-svg": "^15.15.4",
+    "react-native-worklets": "0.5.1",
     "svg-parser": "2.0.4"
   },
   "devDependencies": {
