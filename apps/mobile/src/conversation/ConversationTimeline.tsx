@@ -31,6 +31,10 @@ import type { HydratedTurnDiffState } from "./renderUtils";
 import { useAppThemeContext } from "../appThemeContext";
 
 const FLASH_LIST_DRAW_DISTANCE = 600;
+const CONVERSATION_TIMELINE_LIST_KEY_FALLBACK = "empty-thread";
+const CONVERSATION_TIMELINE_MAINTAIN_VISIBLE_POSITION = {
+  startRenderingFromBottom: true,
+} as const;
 
 const ConversationTimelineImpl = memo(function ConversationTimeline({
   expandedActivityGroupIds,
@@ -186,6 +190,7 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
 
   return (
     <FlashList
+      key={selectedThreadConversationId ?? CONVERSATION_TIMELINE_LIST_KEY_FALLBACK}
       ref={scrollRef}
       contentContainerStyle={styles.messagesScrollContent}
       data={renderItems}
@@ -194,6 +199,7 @@ const ConversationTimelineImpl = memo(function ConversationTimeline({
       keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
       keyboardShouldPersistTaps="handled"
       keyExtractor={(item) => item.id}
+      maintainVisibleContentPosition={CONVERSATION_TIMELINE_MAINTAIN_VISIBLE_POSITION}
       onContentSizeChange={handleConversationContentSizeChange}
       onLayout={handleConversationLayout}
       onScroll={handleConversationScroll}

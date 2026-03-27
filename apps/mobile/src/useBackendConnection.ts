@@ -12,6 +12,7 @@ import type {
   OrchestrationGetTurnDiffResult,
   OrchestrationThread,
   GitStatusResult,
+  OrchestrationMessage,
   OrchestrationReadModel,
   ProjectEntry,
   ProviderInteractionMode,
@@ -69,12 +70,16 @@ import {
   createSnapshotRefreshController,
   type RefreshTrigger,
 } from "./state/snapshotRefreshController";
+import { snapshotHasObservedDispatchedMessage } from "./state/turnDispatchObservation";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const EVENT_REFRESH_WINDOW_MS = 180;
 const EVENT_REFRESH_MAX_WAIT_MS = 250;
 const DIAGNOSTIC_FLUSH_MS = 500;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
+const TURN_DISPATCH_CONFIRMATION_MAX_WAIT_MS = 20_000;
+const TURN_DISPATCH_CONFIRMATION_POLL_INTERVAL_MS = 750;
+const TURN_DISPATCH_CONFIRMATION_REQUEST_TIMEOUT_MS = 3_000;
 
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
@@ -90,6 +95,18 @@ interface PendingServerResponseMarker {
 
 function isSocketOpen(socket: WebSocket | null) {
   return socket?.readyState === WebSocket.OPEN;
+}
+
+function isRequestTimeoutError(error: unknown, tag: string) {
+  return (
+    error instanceof Error && error.message === `The backend did not respond to ${tag} in time.`
+  );
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function getLatestTurnKey(thread: OrchestrationThread | null | undefined) {
@@ -196,6 +213,7 @@ export function useBackendConnection() {
   const [serverNotifications, setServerNotifications] = useState<MobileServerNotification[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
+  const snapshotRef = useRef<OrchestrationReadModel | null>(null);
   const snapshotSequenceRef = useRef(0);
   const pendingRequestsRef = useRef<Map<string, PendingRequest>>(new Map());
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -302,7 +320,13 @@ export function useBackendConnection() {
   });
 
   const request = useStableEvent(
-    <TResult>(tag: string, payload: Record<string, unknown>): Promise<TResult> => {
+    <TResult>(
+      tag: string,
+      payload: Record<string, unknown>,
+      options?: {
+        readonly timeoutMs?: number;
+      },
+    ): Promise<TResult> => {
       const socket = socketRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         return Promise.reject(new Error("Connect to the backend before sending requests."));
@@ -310,10 +334,11 @@ export function useBackendConnection() {
 
       return new Promise<TResult>((resolve, reject) => {
         const requestId = createClientId("req");
+        const timeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS;
         const timeoutHandle = setTimeout(() => {
           pendingRequestsRef.current.delete(requestId);
           reject(new Error(`The backend did not respond to ${tag} in time.`));
-        }, REQUEST_TIMEOUT_MS);
+        }, timeoutMs);
 
         pendingRequestsRef.current.set(requestId, {
           resolve: (value) => resolve(value as TResult),
@@ -335,11 +360,17 @@ export function useBackendConnection() {
   );
 
   const commitSnapshot = useStableEvent((nextSnapshot: OrchestrationReadModel) => {
-    snapshotSequenceRef.current = nextSnapshot.snapshotSequence;
+    const reconciledSnapshot = reconcileReadModel(snapshotRef.current, nextSnapshot);
+    snapshotSequenceRef.current = reconciledSnapshot.snapshotSequence;
+    snapshotRef.current = reconciledSnapshot;
     startTransition(() => {
-      setSnapshot((current) => reconcileReadModel(current, nextSnapshot));
+      setSnapshot(reconciledSnapshot);
     });
   });
+
+  useEffect(() => {
+    snapshotRef.current = snapshot;
+  }, [snapshot]);
 
   const refreshSnapshot = useStableEvent(async (_trigger: RefreshTrigger = "manual") => {
     if (!isSocketOpen(socketRef.current)) {
@@ -688,6 +719,84 @@ export function useBackendConnection() {
     await refreshSnapshot();
   });
 
+  const clearPendingServerResponse = useStableEvent((threadId: string) => {
+    setPendingServerResponses((current) => {
+      if (!(threadId in current)) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[threadId];
+      return next;
+    });
+  });
+
+  const waitForTurnDispatchObservation = useStableEvent(
+    async (input: { readonly threadId: SendTurnInput["threadId"]; readonly messageId: string }) => {
+      const observedInCurrentSnapshot = snapshotHasObservedDispatchedMessage({
+        snapshot: snapshotRef.current,
+        threadId: input.threadId as OrchestrationThread["id"],
+        messageId: input.messageId as OrchestrationMessage["id"],
+      });
+      if (observedInCurrentSnapshot) {
+        return true;
+      }
+
+      const deadline = Date.now() + TURN_DISPATCH_CONFIRMATION_MAX_WAIT_MS;
+      while (Date.now() < deadline) {
+        if (
+          snapshotHasObservedDispatchedMessage({
+            snapshot: snapshotRef.current,
+            threadId: input.threadId as OrchestrationThread["id"],
+            messageId: input.messageId as OrchestrationMessage["id"],
+          })
+        ) {
+          return true;
+        }
+
+        if (!isSocketOpen(socketRef.current)) {
+          return false;
+        }
+
+        try {
+          const nextSnapshot = await request<OrchestrationReadModel>(
+            MOBILE_WS_METHODS.getSnapshot,
+            {},
+            {
+              timeoutMs: TURN_DISPATCH_CONFIRMATION_REQUEST_TIMEOUT_MS,
+            },
+          );
+          commitSnapshot(nextSnapshot);
+          if (
+            snapshotHasObservedDispatchedMessage({
+              snapshot: nextSnapshot,
+              threadId: input.threadId as OrchestrationThread["id"],
+              messageId: input.messageId as OrchestrationMessage["id"],
+            })
+          ) {
+            return true;
+          }
+        } catch (error) {
+          if (!isRequestTimeoutError(error, MOBILE_WS_METHODS.getSnapshot)) {
+            break;
+          }
+        }
+
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          break;
+        }
+        await delay(Math.min(TURN_DISPATCH_CONFIRMATION_POLL_INTERVAL_MS, remainingMs));
+      }
+
+      return snapshotHasObservedDispatchedMessage({
+        snapshot: snapshotRef.current,
+        threadId: input.threadId as OrchestrationThread["id"],
+        messageId: input.messageId as OrchestrationMessage["id"],
+      });
+    },
+  );
+
   const createProjectFromWelcome = useStableEvent(async () => {
     if (!welcome) {
       throw new Error("Wait for the server welcome payload before creating the bootstrap project.");
@@ -758,43 +867,45 @@ export function useBackendConnection() {
   });
 
   const sendTurn = useStableEvent(async (input: SendTurnInput) => {
-    const thread = snapshot?.threads.find((entry) => entry.id === input.threadId) ?? null;
+    const thread =
+      snapshotRef.current?.threads.find((entry) => entry.id === input.threadId) ?? null;
+    const messageId = input.messageId ?? createClientId("message");
+    const command = withCommandMeta({
+      type: "thread.turn.start",
+      threadId: input.threadId,
+      message: {
+        messageId,
+        role: "user" as const,
+        text: input.text,
+        attachments: [...(input.attachments ?? [])],
+      },
+      model: input.model,
+      ...(input.modelOptions ? { modelOptions: input.modelOptions } : {}),
+      dispatchMode: input.turnDispatchMode,
+      assistantDeliveryMode: input.assistantDeliveryMode,
+      runtimeMode: input.runtimeMode,
+      interactionMode: input.interactionMode,
+    });
     setPendingServerResponses((current) => ({
       ...current,
       [input.threadId]: createPendingServerResponseMarker(thread),
     }));
 
     try {
-      await runBusyCommand("Sending turn", () =>
-        dispatchCommand(
-          withCommandMeta({
-            type: "thread.turn.start",
-            threadId: input.threadId,
-            message: {
-              messageId: input.messageId ?? createClientId("message"),
-              role: "user" as const,
-              text: input.text,
-              attachments: [...(input.attachments ?? [])],
-            },
-            model: input.model,
-            ...(input.modelOptions ? { modelOptions: input.modelOptions } : {}),
-            dispatchMode: input.turnDispatchMode,
-            assistantDeliveryMode: input.assistantDeliveryMode,
-            runtimeMode: input.runtimeMode,
-            interactionMode: input.interactionMode,
-          }),
-        ),
-      );
+      await runBusyCommand("Sending turn", () => dispatchCommand(command));
     } catch (error) {
-      setPendingServerResponses((current) => {
-        if (!(input.threadId in current)) {
-          return current;
+      if (isRequestTimeoutError(error, MOBILE_WS_METHODS.dispatchCommand)) {
+        void refreshSnapshot("manual");
+        const didObserveTurn = await waitForTurnDispatchObservation({
+          threadId: input.threadId,
+          messageId,
+        });
+        if (didObserveTurn) {
+          setErrorMessage(null);
+          return;
         }
-
-        const next = { ...current };
-        delete next[input.threadId];
-        return next;
-      });
+      }
+      clearPendingServerResponse(input.threadId);
       throw error;
     }
   });

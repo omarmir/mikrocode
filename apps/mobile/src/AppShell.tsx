@@ -75,6 +75,14 @@ import type {
 } from "./conversation/conversationRenderItems";
 import { ConversationTimeline } from "./conversation/ConversationTimeline";
 import { createConversationAutoScrollController } from "./conversation/autoScrollController";
+import {
+  appendOptimisticThreadMessage,
+  createOptimisticUserMessage,
+  mergeOptimisticMessages,
+  pruneOptimisticMessagesBySnapshot,
+  removeOptimisticThreadMessage,
+  type OptimisticMessagesByThreadId,
+} from "./conversation/optimisticMessages";
 import type { HydratedTurnDiffState } from "./conversation/renderUtils";
 import { threadDiffCacheKey } from "./conversation/renderUtils";
 import { SlidingPanel } from "./gestures/SlidingPanel";
@@ -928,6 +936,8 @@ function AppShellContent() {
   const [threadDraftAttachments, setThreadDraftAttachments] = useState<
     Record<string, DraftImageAttachment[]>
   >({});
+  const [optimisticMessagesByThreadId, setOptimisticMessagesByThreadId] =
+    useState<OptimisticMessagesByThreadId>({});
   const [threadTurnPreferences, setThreadTurnPreferences] = useState<
     Record<string, ThreadTurnPreference>
   >({});
@@ -992,8 +1002,8 @@ function AppShellContent() {
       createConversationAutoScrollController({
         requestAnimationFrame,
         cancelAnimationFrame,
-        onScrollToBottom: () => {
-          messagesScrollRef.current?.scrollToEnd({ animated: true });
+        onScrollToBottom: ({ animated, targetOffset }) => {
+          messagesScrollRef.current?.scrollToOffset({ animated, offset: targetOffset });
         },
         stickyThreshold: MESSAGE_SCROLL_STICKY_THRESHOLD,
       }),
@@ -1002,6 +1012,16 @@ function AppShellContent() {
   const deferredSnapshot = useDeferredValue(snapshot);
   const deferredServerConfig = useDeferredValue(serverConfig);
   const deferredLastPushSequence = useDeferredValue(lastPushSequence);
+
+  useEffect(() => {
+    if (!snapshot?.threads) {
+      return;
+    }
+
+    setOptimisticMessagesByThreadId((current) =>
+      pruneOptimisticMessagesBySnapshot(current, snapshot.threads),
+    );
+  }, [snapshot?.threads]);
 
   const activeProjects = useMemo(
     () => sortProjects(snapshot?.projects ?? []),
@@ -1059,9 +1079,13 @@ function AppShellContent() {
     () => (selectedProject ? sortThreads(allThreads, selectedProject.id) : []),
     [allThreads, selectedProject],
   );
+  const optimisticMessages = useMemo(
+    () => (selectedThread ? (optimisticMessagesByThreadId[selectedThread.id] ?? []) : []),
+    [optimisticMessagesByThreadId, selectedThread],
+  );
   const messages = useMemo(
-    () => sortMessages(selectedThread?.messages ?? []),
-    [selectedThread?.messages],
+    () => sortMessages(mergeOptimisticMessages(selectedThread?.messages ?? [], optimisticMessages)),
+    [optimisticMessages, selectedThread?.messages],
   );
   const serverQueuedMessageIds = useMemo(
     () => new Set((selectedThread?.queuedTurns ?? []).map((queuedTurn) => queuedTurn.messageId)),
@@ -1459,6 +1483,10 @@ function AppShellContent() {
     };
   }, [conversationAutoScrollController]);
 
+  useEffect(() => {
+    conversationAutoScrollController.reset();
+  }, [conversationAutoScrollController, selectedThreadConversationId]);
+
   const requestScrollConversationToEnd = useCallback(
     (options?: { readonly force?: boolean }) => {
       conversationAutoScrollController.requestScrollToBottom({
@@ -1517,21 +1545,6 @@ function AppShellContent() {
 
     setComposerInputHeight(COMPOSER_INPUT_MIN_HEIGHT);
   }, [selectedThreadConversationId]);
-
-  useEffect(() => {
-    if (!selectedThreadConversationId) {
-      return;
-    }
-
-    conversationAutoScrollController.cancelPendingScroll();
-    requestScrollConversationToEnd({ force: true });
-  }, [
-    conversationAutoScrollController,
-    pinnedQueuedMessages.length,
-    requestScrollConversationToEnd,
-    selectedThreadConversationId,
-    timelineEntries.length,
-  ]);
 
   useEffect(() => {
     if (Platform.OS !== "android") {
@@ -2804,7 +2817,7 @@ function AppShellContent() {
     }
 
     const threadId = selectedThread.id;
-    const messageId = createClientId("message");
+    const messageId = createClientId("message") as OrchestrationMessage["id"];
     const modelOptions =
       selectedConversationProvider === "codex" && selectedThreadTurnPreference?.reasoningEffort
         ? {
@@ -2841,10 +2854,22 @@ function AppShellContent() {
     const willInterruptTurn = selectedTurnDispatchMode === "live" && sessionBusy;
     const draftToRestore = draft;
     const attachmentsToRestore = draftAttachments;
+    const optimisticMessage = createOptimisticUserMessage({
+      messageId,
+      text: trimmed,
+      attachments: draftAttachments,
+    });
 
     setThreadDrafts((current) => ({ ...current, [threadId]: "" }));
     setThreadDraftAttachments((current) => ({ ...current, [threadId]: [] }));
     setComposerInputHeight(COMPOSER_INPUT_MIN_HEIGHT);
+    setOptimisticMessagesByThreadId((current) =>
+      appendOptimisticThreadMessage(current, {
+        threadId,
+        message: optimisticMessage,
+      }),
+    );
+    requestScrollConversationToEnd({ force: true });
 
     try {
       await sendTurn({
@@ -2865,6 +2890,12 @@ function AppShellContent() {
         showToast("Interrupting current turn");
       }
     } catch (error) {
+      setOptimisticMessagesByThreadId((current) =>
+        removeOptimisticThreadMessage(current, {
+          threadId,
+          messageId,
+        }),
+      );
       setThreadDrafts((current) => {
         if ((current[threadId] ?? "").length > 0) {
           return current;

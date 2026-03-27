@@ -35,6 +35,10 @@ describe("createConversationAutoScrollController", () => {
     callback(16);
 
     expect(onScrollToBottom).toHaveBeenCalledTimes(1);
+    expect(onScrollToBottom).toHaveBeenCalledWith({
+      animated: false,
+      targetOffset: 320,
+    });
   });
 
   it("respects the sticky threshold unless a forced scroll is requested", () => {
@@ -62,6 +66,10 @@ describe("createConversationAutoScrollController", () => {
     controller.requestScrollToBottom({ force: true });
 
     expect(onScrollToBottom).toHaveBeenCalledTimes(1);
+    expect(onScrollToBottom).toHaveBeenCalledWith({
+      animated: false,
+      targetOffset: 320,
+    });
   });
 
   it("cancels a pending scroll frame", () => {
@@ -79,5 +87,70 @@ describe("createConversationAutoScrollController", () => {
     controller.cancelPendingScroll();
 
     expect(cancelledFrameId).toBe(42);
+  });
+
+  it("keeps sticking to bottom across content growth until the user scrolls away", () => {
+    const onScrollToBottom = vi.fn();
+    const controller = createConversationAutoScrollController({
+      requestAnimationFrame: (callback) => {
+        callback(16);
+        return 0;
+      },
+      cancelAnimationFrame: () => {},
+      onScrollToBottom,
+      stickyThreshold: 24,
+    });
+
+    controller.handleLayout(200);
+    controller.handleScroll({
+      contentHeight: 400,
+      viewportHeight: 200,
+      offsetY: 200,
+    });
+    controller.handleContentSizeChange(420);
+    controller.handleContentSizeChange(460);
+
+    expect(onScrollToBottom).toHaveBeenCalledTimes(2);
+
+    controller.handleScroll({
+      contentHeight: 460,
+      viewportHeight: 200,
+      offsetY: 120,
+    });
+    controller.handleContentSizeChange(500);
+
+    expect(onScrollToBottom).toHaveBeenCalledTimes(2);
+  });
+
+  it("resets scroll stickiness when switching to a different thread", () => {
+    const onScrollToBottom = vi.fn();
+    const controller = createConversationAutoScrollController({
+      requestAnimationFrame: (callback) => {
+        callback(16);
+        return 0;
+      },
+      cancelAnimationFrame: () => {},
+      onScrollToBottom,
+      stickyThreshold: 24,
+    });
+
+    controller.handleLayout(200);
+    controller.handleScroll({
+      contentHeight: 500,
+      viewportHeight: 200,
+      offsetY: 0,
+    });
+    controller.reset();
+    controller.handleContentSizeChange(520);
+
+    expect(onScrollToBottom).not.toHaveBeenCalled();
+
+    controller.handleLayout(200);
+
+    expect(onScrollToBottom).toHaveBeenCalledTimes(1);
+    expect(onScrollToBottom).toHaveBeenCalledWith({
+      animated: false,
+      targetOffset: 320,
+    });
   });
 });
