@@ -27,15 +27,19 @@ export const ProjectEntry = Schema.Struct({
 });
 export type ProjectEntry = typeof ProjectEntry.Type;
 
-const ProjectEntriesResultFields = {
+const ProjectListDirectoryResultFields = {
+  cwd: TrimmedNonEmptyString,
   entries: Schema.Array(ProjectEntry),
   truncated: Schema.Boolean,
 } as const;
 
-export const ProjectListDirectoryResult = Schema.Struct(ProjectEntriesResultFields);
+export const ProjectListDirectoryResult = Schema.Struct(ProjectListDirectoryResultFields);
 export type ProjectListDirectoryResult = typeof ProjectListDirectoryResult.Type;
 
-export const ProjectSearchEntriesResult = Schema.Struct(ProjectEntriesResultFields);
+export const ProjectSearchEntriesResult = Schema.Struct({
+  entries: Schema.Array(ProjectEntry),
+  truncated: Schema.Boolean,
+});
 export type ProjectSearchEntriesResult = typeof ProjectSearchEntriesResult.Type;
 
 export const ProjectWriteFileInput = Schema.Struct({

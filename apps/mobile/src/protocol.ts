@@ -255,3 +255,11 @@ export function buildAttachmentUrl(serverUrl: string, authToken: string, attachm
   parsed.pathname = `/attachments/${encodeURIComponent(attachmentId)}`;
   return parsed.toString();
 }
+
+export function buildHealthcheckUrl(serverUrl: string) {
+  const parsed = normalizeServerUrl(serverUrl);
+  parsed.protocol = parsed.protocol === "wss:" ? "https:" : "http:";
+  parsed.search = "";
+  parsed.pathname = "/health";
+  return parsed.toString();
+}

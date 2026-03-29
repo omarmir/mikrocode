@@ -24,6 +24,7 @@ import type {
 } from "@t3tools/contracts";
 
 import {
+  buildHealthcheckUrl,
   buildDisplayWebSocketUrl,
   buildWebSocketUrl,
   type ConfirmNotificationDeliveryInput,
@@ -77,6 +78,7 @@ const EVENT_REFRESH_WINDOW_MS = 180;
 const EVENT_REFRESH_MAX_WAIT_MS = 250;
 const DIAGNOSTIC_FLUSH_MS = 500;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
+const CONNECTION_PROBE_TIMEOUT_MS = 2_000;
 const TURN_DISPATCH_CONFIRMATION_MAX_WAIT_MS = 20_000;
 const TURN_DISPATCH_CONFIRMATION_POLL_INTERVAL_MS = 750;
 const TURN_DISPATCH_CONFIRMATION_REQUEST_TIMEOUT_MS = 3_000;
@@ -93,6 +95,12 @@ interface PendingServerResponseMarker {
   readonly baselineLatestActivityId: string | null;
 }
 
+interface BackendHealthProbe {
+  readonly healthUrl: string;
+  readonly reachable: boolean;
+  readonly authRequired: boolean | null;
+}
+
 function isSocketOpen(socket: WebSocket | null) {
   return socket?.readyState === WebSocket.OPEN;
 }
@@ -107,6 +115,65 @@ function delay(ms: number) {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function probeBackendHandshakeFailure(serverUrl: string): Promise<BackendHealthProbe> {
+  const healthUrl = buildHealthcheckUrl(serverUrl);
+
+  try {
+    const response = (await Promise.race([
+      fetch(healthUrl, { method: "GET" }),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error("healthcheck timeout"));
+        }, CONNECTION_PROBE_TIMEOUT_MS);
+      }),
+    ])) as Awaited<ReturnType<typeof fetch>>;
+
+    let authRequired: boolean | null = null;
+    try {
+      const payload = (await response.json()) as unknown;
+      if (isRecord(payload) && typeof payload.authRequired === "boolean") {
+        authRequired = payload.authRequired;
+      }
+    } catch {
+      authRequired = null;
+    }
+
+    return {
+      healthUrl,
+      reachable: true,
+      authRequired,
+    };
+  } catch {
+    return {
+      healthUrl,
+      reachable: false,
+      authRequired: null,
+    };
+  }
+}
+
+async function describeHandshakeFailure(input: {
+  readonly serverUrl: string;
+  readonly authToken: string;
+}) {
+  const probe = await probeBackendHandshakeFailure(input.serverUrl);
+  if (!probe.reachable) {
+    return `Could not reach the backend at ${probe.healthUrl}. Check the server URL, port, and that the server is reachable from this device.`;
+  }
+
+  if (probe.authRequired === true) {
+    return input.authToken.trim()
+      ? "The backend rejected the WebSocket handshake. Check that the auth token matches the server."
+      : "The backend requires an auth token. Enter the same token used to start the server.";
+  }
+
+  return "The backend is reachable over HTTP, but the WebSocket handshake was rejected. Check the server URL, auth token, and any proxy or tunnel in front of the backend.";
 }
 
 function getLatestTurnKey(thread: OrchestrationThread | null | undefined) {
@@ -577,7 +644,7 @@ export function useBackendConnection() {
 
         const handleError = () => {
           if (!opened) {
-            setErrorMessage("The backend WebSocket failed before it could connect.");
+            setErrorMessage("The backend WebSocket failed during the handshake.");
           }
         };
 
@@ -591,7 +658,12 @@ export function useBackendConnection() {
             socketListenerCleanupRef.current = null;
           }
           if (!opened) {
-            reject(new Error("The backend closed the connection before it became ready."));
+            void describeHandshakeFailure({
+              serverUrl: connectionSettings.serverUrl,
+              authToken: connectionSettings.authToken,
+            }).then((message) => {
+              reject(new Error(message));
+            });
             return;
           }
           if (shouldStayConnectedRef.current) {

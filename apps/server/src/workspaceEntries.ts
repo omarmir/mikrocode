@@ -566,6 +566,7 @@ export function clearWorkspaceIndexCache(cwd: string): void {
 export async function listWorkspaceDirectories(
   input: ProjectListDirectoryInput,
 ): Promise<ProjectListDirectoryResult> {
+  const normalizedCwd = path.resolve(input.cwd);
   const dirents = await fs.readdir(input.cwd, { withFileTypes: true });
   const directories = (
     await mapWithConcurrency(
@@ -585,6 +586,7 @@ export async function listWorkspaceDirectories(
     .toSorted((left, right) => left.path.localeCompare(right.path));
 
   return {
+    cwd: normalizedCwd,
     entries: directories.slice(0, DIRECTORY_LIST_MAX_ENTRIES),
     truncated: directories.length > DIRECTORY_LIST_MAX_ENTRIES,
   };

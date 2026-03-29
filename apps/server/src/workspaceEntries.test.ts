@@ -67,6 +67,7 @@ describe("searchWorkspaceEntries", () => {
     const result = await listWorkspaceDirectories({ cwd });
     const paths = result.entries.map((entry) => entry.path);
 
+    assert.strictEqual(result.cwd, cwd);
     assert.sameMembers(paths, ["empty-folder", "nested", "src"]);
     assert.isTrue(result.entries.every((entry) => entry.kind === "directory"));
     assert.isFalse(result.truncated);

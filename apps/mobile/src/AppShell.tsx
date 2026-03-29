@@ -1823,11 +1823,13 @@ function AppShellContent() {
         if (directoryLoadSequenceRef.current !== nextSequence) {
           return;
         }
-        setDirectoryCwd(listing.cwd);
+        const resolvedCwd =
+          typeof listing.cwd === "string" && listing.cwd.trim().length > 0 ? listing.cwd : cwd;
+        setDirectoryCwd(resolvedCwd);
         setDirectoryEntries(listing.entries.filter((entry) => entry.kind === "directory"));
         setDirectoryTruncated(listing.truncated);
         if (projectBuilderMode === "mount") {
-          setProjectTitleDraft(basenameOf(listing.cwd));
+          setProjectTitleDraft(basenameOf(resolvedCwd));
         }
       } finally {
         if (directoryLoadSequenceRef.current === nextSequence) {
@@ -4212,30 +4214,34 @@ function AppShellContent() {
                 </Text>
               </View>
               <View style={styles.themeOptionGrid}>
-                {FLEXOKI_DARK_NEUTRAL_OPTIONS.map((option) => (
-                  <Pressable
-                    key={option.id}
-                    onPress={() => {
-                      handleSelectThemeBase(option.id);
-                    }}
-                    style={[
-                      styles.themeOptionButton,
-                      connectionSettings.themeBase === option.id &&
-                        styles.themeOptionButtonSelected,
-                    ]}
-                  >
-                    <View
+                {FLEXOKI_DARK_NEUTRAL_OPTIONS.map((option) => {
+                  const swatchColor = option.value;
+
+                  return (
+                    <Pressable
+                      key={option.id}
+                      onPress={() => {
+                        handleSelectThemeBase(option.id);
+                      }}
                       style={[
-                        styles.themeOptionSwatch,
-                        { backgroundColor: option.value },
+                        styles.themeOptionButton,
                         connectionSettings.themeBase === option.id &&
-                          styles.themeOptionSwatchSelected,
+                          styles.themeOptionButtonSelected,
                       ]}
-                    />
-                    <Text style={styles.themeOptionLabel}>{option.label}</Text>
-                    <Text style={styles.themeOptionMeta}>{option.value}</Text>
-                  </Pressable>
-                ))}
+                    >
+                      <View
+                        style={[
+                          styles.themeOptionSwatch,
+                          { backgroundColor: swatchColor },
+                          connectionSettings.themeBase === option.id &&
+                            styles.themeOptionSwatchSelected,
+                        ]}
+                      />
+                      <Text style={styles.themeOptionLabel}>{option.label}</Text>
+                      <Text style={styles.themeOptionMeta}>{swatchColor}</Text>
+                    </Pressable>
+                  );
+                })}
               </View>
             </View>
 
@@ -4247,23 +4253,27 @@ function AppShellContent() {
                 </Text>
               </View>
               <View style={styles.themeOptionGrid}>
-                {FLEXOKI_DARK_ACCENT_OPTIONS.map((option) => (
-                  <Pressable
-                    key={option.id}
-                    onPress={() => {
-                      handleSelectThemeAccent(option.id);
-                    }}
-                    style={[
-                      styles.themeOptionButton,
-                      connectionSettings.themeAccent === option.id &&
-                        styles.themeOptionButtonSelected,
-                    ]}
-                  >
-                    <View style={[styles.themeOptionSwatch, { backgroundColor: option.value }]} />
-                    <Text style={styles.themeOptionLabel}>{option.label}</Text>
-                    <Text style={styles.themeOptionMeta}>{option.value}</Text>
-                  </Pressable>
-                ))}
+                {FLEXOKI_DARK_ACCENT_OPTIONS.map((option) => {
+                  const swatchColor = option.value;
+
+                  return (
+                    <Pressable
+                      key={option.id}
+                      onPress={() => {
+                        handleSelectThemeAccent(option.id);
+                      }}
+                      style={[
+                        styles.themeOptionButton,
+                        connectionSettings.themeAccent === option.id &&
+                          styles.themeOptionButtonSelected,
+                      ]}
+                    >
+                      <View style={[styles.themeOptionSwatch, { backgroundColor: swatchColor }]} />
+                      <Text style={styles.themeOptionLabel}>{option.label}</Text>
+                      <Text style={styles.themeOptionMeta}>{swatchColor}</Text>
+                    </Pressable>
+                  );
+                })}
               </View>
             </View>
           </View>
