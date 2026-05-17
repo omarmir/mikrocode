@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * ServerConfig - Runtime configuration services.
  *

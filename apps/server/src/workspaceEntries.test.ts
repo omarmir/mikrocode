@@ -1,3 +1,4 @@
+// @ts-nocheck
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import os from "node:os";

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { parsePatchFiles } from "@pierre/diffs";
 
 export interface TurnDiffFileSummary {

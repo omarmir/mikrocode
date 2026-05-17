@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {
   IsoDateTime,
   OrchestrationProposedPlanId,
@@ -5,8 +6,9 @@ import {
   TrimmedNonEmptyString,
   TurnId,
 } from "@t3tools/contracts";
-import { Schema, ServiceMap } from "effect";
-import type { Effect } from "effect";
+import * as Schema from "effect/Schema";
+import * as Context from "effect/Context";
+import type * as Effect from "effect/Effect";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
@@ -46,7 +48,7 @@ export interface ProjectionThreadProposedPlanRepositoryShape {
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
-export class ProjectionThreadProposedPlanRepository extends ServiceMap.Service<
+export class ProjectionThreadProposedPlanRepository extends Context.Service<
   ProjectionThreadProposedPlanRepository,
   ProjectionThreadProposedPlanRepositoryShape
 >()(

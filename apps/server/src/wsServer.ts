@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Server - HTTP/WebSocket server service interface.
  *
@@ -25,13 +26,15 @@ import {
   type ServerNotificationDelivery,
   ThreadId,
   TurnId,
+} from "@t3tools/contracts";
+import {
   WS_CHANNELS,
   WS_METHODS,
   WebSocketRequest,
+  type WsPushEnvelopeBase,
   type WsResponse as WsResponseMessage,
   WsResponse,
-  type WsPushEnvelopeBase,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/ws";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
   Cause,

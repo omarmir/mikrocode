@@ -94,7 +94,7 @@ function equalProject(left: OrchestrationProject, right: OrchestrationProject) {
     left.id === right.id &&
     left.title === right.title &&
     left.workspaceRoot === right.workspaceRoot &&
-    left.defaultModel === right.defaultModel &&
+    left.defaultModelSelection?.model === right.defaultModelSelection?.model &&
     left.createdAt === right.createdAt &&
     left.updatedAt === right.updatedAt &&
     left.deletedAt === right.deletedAt &&
@@ -326,7 +326,7 @@ function reconcileThread(previous: OrchestrationThread, next: OrchestrationThrea
     previous.id === next.id &&
     previous.projectId === next.projectId &&
     previous.title === next.title &&
-    previous.model === next.model &&
+    previous.modelSelection.model === next.modelSelection.model &&
     previous.runtimeMode === next.runtimeMode &&
     previous.interactionMode === next.interactionMode &&
     previous.branch === next.branch &&

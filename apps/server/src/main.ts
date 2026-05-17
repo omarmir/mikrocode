@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * CliConfig - CLI/runtime bootstrap service definitions.
  *

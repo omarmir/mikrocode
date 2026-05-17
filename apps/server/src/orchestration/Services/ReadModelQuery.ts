@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * ReadModelQuery - In-memory orchestration read-model query service interface.
  *

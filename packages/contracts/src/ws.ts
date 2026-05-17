@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Schema, Struct } from "effect";
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 import {

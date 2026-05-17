@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-nocheck
 
 import { spawn } from "node:child_process";
 

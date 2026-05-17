@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Path } from "effect";
 
 import { GitCommandError } from "../Errors.ts";

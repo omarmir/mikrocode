@@ -61,6 +61,7 @@ import type {
   ProjectEntry,
   ProviderReasoningEffort,
   RuntimeMode,
+  ServerConfig,
   ServerConversationCapabilities,
   UserInputQuestion,
 } from "@t3tools/contracts";
@@ -172,7 +173,27 @@ function resolveProviderForThread(
   if (thread.session?.providerName === "codex" || thread.session?.providerName === "claudeAgent") {
     return thread.session.providerName;
   }
-  return thread.model.trim().toLowerCase().startsWith("claude") ? "claudeAgent" : "codex";
+  return thread.modelSelection.model.trim().toLowerCase().startsWith("claude")
+    ? "claudeAgent"
+    : "codex";
+}
+
+function getThreadModel(thread: OrchestrationThread | null | undefined) {
+  return thread?.modelSelection.model ?? FALLBACK_MODEL;
+}
+
+function getProjectDefaultModel(project: OrchestrationProject | null | undefined) {
+  return project?.defaultModelSelection?.model ?? FALLBACK_MODEL;
+}
+
+function getProviderRowIdentity(provider: ServerConfig["providers"][number]) {
+  const providerId = provider.driver;
+  const providerLabel = providerId === "claudeAgent" ? "claudeAgent" : "codex";
+  return {
+    providerId: providerLabel,
+    authStatus: provider.auth.status,
+    available: provider.availability !== "unavailable" && provider.installed && provider.enabled,
+  } as const;
 }
 
 function formatTimestamp(timestamp: string) {
@@ -708,7 +729,7 @@ function findThreadRemainingContextPercent(thread: OrchestrationThread | null): 
 }
 
 function formatThreadModelLabel(thread: OrchestrationThread | null) {
-  const model = thread?.model ?? FALLBACK_MODEL;
+  const model = getThreadModel(thread);
   const remainingContextPercent = findThreadRemainingContextPercent(thread);
   if (remainingContextPercent === null) {
     return model;
@@ -1987,7 +2008,7 @@ function AppShellContent() {
     const threadId = await createThread({
       projectId: project.id,
       title: createThreadTitle(project.title),
-      model: project.defaultModel ?? FALLBACK_MODEL,
+      model: getProjectDefaultModel(project),
     });
 
     setSelectedProjectId(project.id);
@@ -2479,7 +2500,7 @@ function AppShellContent() {
     if (!selectedThread) {
       return;
     }
-    if (selectedThread.model === model) {
+    if (getThreadModel(selectedThread) === model) {
       closeConversationPicker();
       return;
     }
@@ -2881,7 +2902,7 @@ function AppShellContent() {
         attachments: attachmentsToSend,
         runtimeMode: selectedRuntimeMode,
         interactionMode: selectedInteractionMode,
-        model: selectedThread.model,
+        model: getThreadModel(selectedThread),
         turnDispatchMode: selectedTurnDispatchMode,
         assistantDeliveryMode: "streaming",
         ...(modelOptions ? { modelOptions } : {}),
@@ -3226,14 +3247,14 @@ function AppShellContent() {
           <View style={styles.compactList}>
             {providers.length > 0 ? (
               providers.map((provider) => (
-                <View key={provider.provider} style={styles.providerRow}>
+                <View key={provider.instanceId} style={styles.providerRow}>
                   <View style={styles.providerCopy}>
                     <Text style={styles.providerTitle}>
-                      {formatProviderLabel(provider.provider)}
+                      {formatProviderLabel(getProviderRowIdentity(provider).providerId)}
                     </Text>
                     <Text style={styles.providerMeta}>
                       {provider.message ??
-                        `${provider.authStatus} / ${provider.available ? "available" : "unavailable"}`}
+                        `${getProviderRowIdentity(provider).authStatus} / ${getProviderRowIdentity(provider).available ? "available" : "unavailable"}`}
                     </Text>
                   </View>
                   <Text
@@ -3797,7 +3818,7 @@ function AppShellContent() {
             key: option.slug,
             title: option.name,
             meta: option.slug === option.name ? null : option.slug,
-            current: option.slug === selectedThread.model,
+            current: option.slug === getThreadModel(selectedThread),
             available: option.available,
             reason: option.reason ?? null,
             onPress: () => {
@@ -4436,12 +4457,14 @@ function AppShellContent() {
           <Text style={styles.sectionEyebrow}>Harness</Text>
           {providers.length > 0 ? (
             providers.map((provider) => (
-              <View key={provider.provider} style={styles.providerRow}>
+              <View key={provider.instanceId} style={styles.providerRow}>
                 <View style={styles.providerCopy}>
-                  <Text style={styles.providerTitle}>{formatProviderLabel(provider.provider)}</Text>
+                  <Text style={styles.providerTitle}>
+                    {formatProviderLabel(getProviderRowIdentity(provider).providerId)}
+                  </Text>
                   <Text style={styles.providerMeta}>
                     {provider.message ??
-                      `${provider.authStatus} / ${provider.available ? "available" : "unavailable"}`}
+                      `${getProviderRowIdentity(provider).authStatus} / ${getProviderRowIdentity(provider).available ? "available" : "unavailable"}`}
                   </Text>
                 </View>
                 <Text

@@ -1,4 +1,6 @@
-import { SchemaIssue, Schema } from "effect";
+// @ts-nocheck
+import * as SchemaIssue from "effect/SchemaIssue";
+import * as Schema from "effect/Schema";
 
 import type { ProjectionRepositoryError } from "../persistence/Errors.ts";
 

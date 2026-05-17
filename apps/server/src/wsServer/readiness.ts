@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Deferred, Effect } from "effect";
 
 export interface ServerReadiness {

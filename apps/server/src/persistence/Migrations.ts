@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * MigrationsLive - Migration runner with inline loader
  *

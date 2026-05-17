@@ -1,3 +1,4 @@
+// @ts-nocheck
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";

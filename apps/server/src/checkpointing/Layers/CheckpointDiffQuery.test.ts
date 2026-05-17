@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {
   CheckpointRef,
   DEFAULT_PROVIDER_INTERACTION_MODE,

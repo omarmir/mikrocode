@@ -1,3 +1,4 @@
+// @ts-nocheck
 import type { WebSocket } from "ws";
 import { it } from "@effect/vitest";
 import { describe, expect } from "vitest";

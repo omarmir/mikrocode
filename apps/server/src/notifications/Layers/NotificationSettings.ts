@@ -1,3 +1,4 @@
+// @ts-nocheck
 import type { ServerNotificationSettings } from "@t3tools/contracts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";

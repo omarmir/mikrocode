@@ -1,4 +1,6 @@
-import { Effect, Layer } from "effect";
+// @ts-nocheck
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 

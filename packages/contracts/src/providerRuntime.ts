@@ -1,27 +1,33 @@
-import { Option, Schema } from "effect";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import {
   EventId,
   IsoDateTime,
+  NonNegativeInt,
   ProviderItemId,
+  PositiveInt,
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
   ThreadId,
   TrimmedNonEmptyString,
   TurnId,
-} from "./baseSchemas";
-import { ProviderKind } from "./orchestration";
+} from "./baseSchemas.ts";
+import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
 
-const RuntimeEventRawSource = Schema.Literals([
-  "codex.app-server.notification",
-  "codex.app-server.request",
-  "codex.eventmsg",
-  "claude.sdk.message",
-  "claude.sdk.permission",
-  "codex.sdk.thread-event",
+const RuntimeEventRawSource = Schema.Union([
+  Schema.Literal("codex.app-server.notification"),
+  Schema.Literal("codex.app-server.request"),
+  Schema.Literal("codex.eventmsg"),
+  Schema.Literal("claude.sdk.message"),
+  Schema.Literal("claude.sdk.permission"),
+  Schema.Literal("codex.sdk.thread-event"),
+  Schema.Literal("opencode.sdk.event"),
+  Schema.Literal("acp.jsonrpc"),
+  Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
 ]);
 export type RuntimeEventRawSource = typeof RuntimeEventRawSource.Type;
 
@@ -240,7 +246,11 @@ const RuntimeErrorType = Schema.Literal("runtime.error");
 
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
-  provider: ProviderKind,
+  provider: ProviderDriverKind,
+  // Optional during the driver/instance migration. See providerInstance.ts
+  // for the routing-key-vs-driver-id distinction. Once every emitter
+  // populates it (post-slice-4), routing flips to instance-id-only.
+  providerInstanceId: Schema.optional(ProviderInstanceId),
   threadId: ThreadId,
   createdAt: IsoDateTime,
   turnId: Schema.optional(TurnId),
@@ -293,8 +303,27 @@ const ThreadMetadataUpdatedPayload = Schema.Struct({
 });
 export type ThreadMetadataUpdatedPayload = typeof ThreadMetadataUpdatedPayload.Type;
 
+export const ThreadTokenUsageSnapshot = Schema.Struct({
+  usedTokens: NonNegativeInt,
+  totalProcessedTokens: Schema.optional(NonNegativeInt),
+  maxTokens: Schema.optional(PositiveInt),
+  inputTokens: Schema.optional(NonNegativeInt),
+  cachedInputTokens: Schema.optional(NonNegativeInt),
+  outputTokens: Schema.optional(NonNegativeInt),
+  reasoningOutputTokens: Schema.optional(NonNegativeInt),
+  lastUsedTokens: Schema.optional(NonNegativeInt),
+  lastInputTokens: Schema.optional(NonNegativeInt),
+  lastCachedInputTokens: Schema.optional(NonNegativeInt),
+  lastOutputTokens: Schema.optional(NonNegativeInt),
+  lastReasoningOutputTokens: Schema.optional(NonNegativeInt),
+  toolUses: Schema.optional(NonNegativeInt),
+  durationMs: Schema.optional(NonNegativeInt),
+  compactsAutomatically: Schema.optional(Schema.Boolean),
+});
+export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
+
 const ThreadTokenUsageUpdatedPayload = Schema.Struct({
-  usage: Schema.Unknown,
+  usage: ThreadTokenUsageSnapshot,
 });
 export type ThreadTokenUsageUpdatedPayload = typeof ThreadTokenUsageUpdatedPayload.Type;
 
@@ -414,7 +443,7 @@ export const UserInputQuestion = Schema.Struct({
   question: TrimmedNonEmptyStringSchema,
   options: Schema.Array(UserInputQuestionOption),
   multiSelect: Schema.optional(Schema.Boolean).pipe(
-    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withConstructorDefault(Effect.succeed(false)),
   ),
 });
 export type UserInputQuestion = typeof UserInputQuestion.Type;
