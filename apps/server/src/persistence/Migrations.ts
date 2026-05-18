@@ -32,6 +32,17 @@ import Migration0016 from "./Migrations/016_ProjectionTurnsDispatchMode.ts";
 import Migration0017 from "./Migrations/017_ServerNotificationSettings.ts";
 import Migration0018 from "./Migrations/018_ServerNotificationSettingsBackfill.ts";
 import Migration0019 from "./Migrations/019_ServerNotificationSettingsEnabled.ts";
+import Migration0020 from "./Migrations/020_AuthAccessManagement.ts";
+import Migration0021 from "./Migrations/021_AuthSessionClientMetadata.ts";
+import Migration0022 from "./Migrations/022_AuthSessionLastConnectedAt.ts";
+import Migration0023 from "./Migrations/023_ProjectionThreadShellSummary.ts";
+import Migration0024 from "./Migrations/024_BackfillProjectionThreadShellSummary.ts";
+import Migration0025 from "./Migrations/025_CleanupInvalidProjectionPendingApprovals.ts";
+import Migration0026 from "./Migrations/026_CanonicalizeModelSelectionOptions.ts";
+import Migration0027 from "./Migrations/027_ProviderSessionRuntimeInstanceId.ts";
+import Migration0028 from "./Migrations/028_ProjectionThreadSessionInstanceId.ts";
+import Migration0029 from "./Migrations/029_ProjectionThreadDetailOrderingIndexes.ts";
+import Migration0030 from "./Migrations/030_ProjectionThreadShellArchiveIndexes.ts";
 import { Effect } from "effect";
 
 /**
@@ -64,6 +75,17 @@ const loader = Migrator.fromRecord({
   "17_ServerNotificationSettings": Migration0017,
   "18_ServerNotificationSettingsBackfill": Migration0018,
   "19_ServerNotificationSettingsEnabled": Migration0019,
+  "20_AuthAccessManagement": Migration0020,
+  "21_AuthSessionClientMetadata": Migration0021,
+  "22_AuthSessionLastConnectedAt": Migration0022,
+  "23_ProjectionThreadShellSummary": Migration0023,
+  "24_BackfillProjectionThreadShellSummary": Migration0024,
+  "25_CleanupInvalidProjectionPendingApprovals": Migration0025,
+  "26_CanonicalizeModelSelectionOptions": Migration0026,
+  "27_ProviderSessionRuntimeInstanceId": Migration0027,
+  "28_ProjectionThreadSessionInstanceId": Migration0028,
+  "29_ProjectionThreadDetailOrderingIndexes": Migration0029,
+  "30_ProjectionThreadShellArchiveIndexes": Migration0030,
 });
 
 /**
@@ -82,11 +104,12 @@ const run = Migrator.make({});
  *
  * @returns Effect containing array of executed migrations
  */
-export const runMigrations = Effect.gen(function* () {
-  yield* Effect.log("Running migrations...");
-  yield* run({ loader });
-  yield* Effect.log("Migrations ran successfully");
-});
+export const runMigrations = () =>
+  Effect.gen(function* () {
+    yield* Effect.log("Running migrations...");
+    yield* run({ loader });
+    yield* Effect.log("Migrations ran successfully");
+  });
 
 /**
  * Layer that runs migrations when the layer is built.
@@ -105,4 +128,4 @@ export const runMigrations = Effect.gen(function* () {
  * )
  * ```
  */
-export const MigrationsLive = Layer.effectDiscard(runMigrations);
+export const MigrationsLive = Layer.effectDiscard(runMigrations());

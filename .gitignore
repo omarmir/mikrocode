@@ -9,6 +9,7 @@ apps/mobile/.expo
 !apps/mobile/android/
 apps/mobile/android/.gradle/
 apps/mobile/android/.kotlin/
+apps/mobile/android/app/debug.keystore
 apps/mobile/android/build/
 apps/mobile/android/app/build/
 !apps/mobile/android/app/build/outputs/

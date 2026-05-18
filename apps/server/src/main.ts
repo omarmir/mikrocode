@@ -7,7 +7,7 @@
  *
  * @module CliConfig
  */
-import { Config, Data, Effect, Layer, Option, Schema, ServiceMap } from "effect";
+import { Config, Context, Data, Effect, Layer, Option, Schema } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
 import { NetService } from "@t3tools/shared/Net";
 import { DEFAULT_PORT, deriveServerPaths, ServerConfig, type ServerConfigShape } from "./config";
@@ -40,9 +40,7 @@ export interface CliConfigShape {
   readonly fixPath: Effect.Effect<void>;
 }
 
-export class CliConfig extends ServiceMap.Service<CliConfig, CliConfigShape>()(
-  "t3/main/CliConfig",
-) {
+export class CliConfig extends Context.Service<CliConfig, CliConfigShape>()("t3/main/CliConfig") {
   static readonly layer = Layer.succeed(CliConfig, {
     cwd: process.cwd(),
     fixPath: Effect.sync(fixPath),

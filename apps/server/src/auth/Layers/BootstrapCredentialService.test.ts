@@ -12,9 +12,7 @@ import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { BootstrapCredentialService } from "../Services/BootstrapCredentialService.ts";
 import { BootstrapCredentialServiceLive } from "./BootstrapCredentialService.ts";
 
-const makeServerConfigLayer = (
-  overrides?: Partial<Pick<ServerConfigShape, "desktopBootstrapToken">>,
-) =>
+const makeServerConfigLayer = (overrides?: Partial<ServerConfigShape>) =>
   Layer.effect(
     ServerConfig,
     Effect.gen(function* () {
@@ -28,9 +26,7 @@ const makeServerConfigLayer = (
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-auth-bootstrap-test-" })),
   );
 
-const makeBootstrapCredentialLayer = (
-  overrides?: Partial<Pick<ServerConfigShape, "desktopBootstrapToken">>,
-) =>
+const makeBootstrapCredentialLayer = (overrides?: Partial<ServerConfigShape>) =>
   BootstrapCredentialServiceLive.pipe(
     Layer.provide(SqlitePersistenceMemory),
     Layer.provide(makeServerConfigLayer(overrides)),
@@ -86,48 +82,6 @@ it.layer(NodeServices.layer)("BootstrapCredentialServiceLive", (it) => {
         expect(failure.failure.message).toContain("Unknown bootstrap credential");
       }
     }).pipe(Effect.provide(makeBootstrapCredentialLayer())),
-  );
-
-  it.effect("seeds the desktop bootstrap credential as a one-time grant", () =>
-    Effect.gen(function* () {
-      const bootstrapCredentials = yield* BootstrapCredentialService;
-      const first = yield* bootstrapCredentials.consume("desktop-bootstrap-token");
-      const second = yield* Effect.flip(bootstrapCredentials.consume("desktop-bootstrap-token"));
-
-      expect(first.method).toBe("desktop-bootstrap");
-      expect(first.role).toBe("owner");
-      expect(first.subject).toBe("desktop-bootstrap");
-      expect(second._tag).toBe("BootstrapCredentialError");
-      expect(second.status).toBe(401);
-    }).pipe(
-      Effect.provide(
-        makeBootstrapCredentialLayer({
-          desktopBootstrapToken: "desktop-bootstrap-token",
-        }),
-      ),
-    ),
-  );
-
-  it.effect("reports seeded desktop bootstrap credentials as expired after their ttl", () =>
-    Effect.gen(function* () {
-      const bootstrapCredentials = yield* BootstrapCredentialService;
-
-      yield* TestClock.adjust(Duration.minutes(6));
-      const expired = yield* Effect.flip(bootstrapCredentials.consume("desktop-bootstrap-token"));
-
-      expect(expired._tag).toBe("BootstrapCredentialError");
-      expect(expired.status).toBe(401);
-      expect(expired.message).toContain("Bootstrap credential expired");
-    }).pipe(
-      Effect.provide(
-        Layer.merge(
-          makeBootstrapCredentialLayer({
-            desktopBootstrapToken: "desktop-bootstrap-token",
-          }),
-          TestClock.layer(),
-        ),
-      ),
-    ),
   );
 
   it.effect("lists and revokes active pairing links", () =>

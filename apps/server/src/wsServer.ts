@@ -48,9 +48,9 @@ import {
   Result,
   Schema,
   Scope,
-  ServiceMap,
   Stream,
   Struct,
+  Context,
 } from "effect";
 import { clamp } from "effect/Number";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
@@ -101,7 +101,7 @@ export interface ServerShape {
   readonly stopSignal: Effect.Effect<void, never>;
 }
 
-export class Server extends ServiceMap.Service<Server, ServerShape>()("t3/wsServer/Server") {}
+export class Server extends Context.Service<Server, ServerShape>()("t3/wsServer/Server") {}
 
 const isServerNotRunningError = (error: Error): boolean => {
   const maybeCode = (error as NodeJS.ErrnoException).code;

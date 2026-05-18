@@ -99,6 +99,28 @@ resolve_node_home() {
   printf '%s\n' "${DEFAULT_NODE_HOME}"
 }
 
+ensure_android_debug_keystore() {
+  local keystore_path="${REPO_ROOT}/apps/mobile/android/app/debug.keystore"
+
+  if [[ -f "${keystore_path}" ]]; then
+    return
+  fi
+
+  echo "Generating Android debug keystore at ${keystore_path}..."
+  "${JAVA_HOME}/bin/keytool" \
+    -genkeypair \
+    -v \
+    -storetype PKCS12 \
+    -keystore "${keystore_path}" \
+    -alias androiddebugkey \
+    -storepass android \
+    -keypass android \
+    -keyalg RSA \
+    -keysize 2048 \
+    -validity 10000 \
+    -dname "CN=Android Debug,O=Android,C=US"
+}
+
 JAVA_HOME="$(resolve_java_home)"
 ANDROID_SDK_ROOT="$(resolve_android_sdk_root)"
 ANDROID_HOME="${ANDROID_SDK_ROOT}"
@@ -109,6 +131,8 @@ export ANDROID_HOME
 export ANDROID_SDK_ROOT
 export NODE_HOME
 export PATH="${NODE_HOME}/bin:${JAVA_HOME}/bin:${ANDROID_HOME}/platform-tools:${PATH}"
+
+ensure_android_debug_keystore
 
 cd "${REPO_ROOT}/apps/mobile/android"
 ./gradlew assembleRelease

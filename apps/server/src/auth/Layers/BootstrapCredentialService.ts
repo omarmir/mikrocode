@@ -84,19 +84,6 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
       id,
     }).pipe(Effect.asVoid);
 
-  if (config.desktopBootstrapToken) {
-    const now = yield* DateTime.now;
-    yield* seedGrant(config.desktopBootstrapToken, {
-      method: "desktop-bootstrap",
-      role: "owner",
-      subject: "desktop-bootstrap",
-      expiresAt: DateTime.add(now, {
-        milliseconds: Duration.toMillis(DEFAULT_ONE_TIME_TOKEN_TTL_MINUTES),
-      }),
-      remainingUses: 1,
-    });
-  }
-
   const toBootstrapCredentialError = (message: string) => (cause: unknown) =>
     internalBootstrapCredentialError(message, cause);
 

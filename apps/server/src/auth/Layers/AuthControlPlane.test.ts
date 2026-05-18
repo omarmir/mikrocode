@@ -14,9 +14,7 @@ import { AuthControlPlane } from "../Services/AuthControlPlane.ts";
 import { makeAuthControlPlane } from "./AuthControlPlane.ts";
 import { SessionCredentialService } from "../Services/SessionCredentialService.ts";
 
-const makeServerConfigLayer = (
-  overrides?: Partial<Pick<ServerConfigShape, "desktopBootstrapToken">>,
-) =>
+const makeServerConfigLayer = (overrides?: Partial<ServerConfigShape>) =>
   Layer.effect(
     ServerConfig,
     Effect.gen(function* () {
@@ -30,9 +28,7 @@ const makeServerConfigLayer = (
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-auth-control-plane-test-" })),
   );
 
-const makeAuthControlPlaneLayer = (
-  overrides?: Partial<Pick<ServerConfigShape, "desktopBootstrapToken">>,
-) =>
+const makeAuthControlPlaneLayer = (overrides?: Partial<ServerConfigShape>) =>
   Layer.effect(AuthControlPlane, makeAuthControlPlane).pipe(
     Layer.provideMerge(BootstrapCredentialServiceLive),
     Layer.provideMerge(SessionCredentialServiceLive),
