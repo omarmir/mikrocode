@@ -3,7 +3,7 @@ import type {
   ServerNotificationSettings,
   ServerSetNotificationSettingsInput,
 } from "@t3tools/contracts";
-import { ServiceMap } from "effect";
+import { Context } from "effect";
 import type { Effect } from "effect";
 
 import type { PersistenceSqlError } from "../../persistence/Errors.ts";
@@ -15,7 +15,7 @@ export interface NotificationSettingsShape {
   ) => Effect.Effect<ServerNotificationSettings, PersistenceSqlError>;
 }
 
-export class NotificationSettingsService extends ServiceMap.Service<
+export class NotificationSettingsService extends Context.Service<
   NotificationSettingsService,
   NotificationSettingsShape
 >()("t3/notifications/Services/NotificationSettings/NotificationSettingsService") {}

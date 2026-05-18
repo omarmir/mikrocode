@@ -123,8 +123,10 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
     Effect.gen(function* () {
       const serverAuth = yield* ServerAuth;
 
+      const startupPairingUrl = yield* serverAuth.issueStartupPairingUrl("http://127.0.0.1:3773");
+      const ownerToken = new URLSearchParams(new URL(startupPairingUrl).hash.slice(1)).get("token");
       const ownerExchange = yield* serverAuth.exchangeBootstrapCredential(
-        "desktop-bootstrap-token",
+        ownerToken ?? "",
         requestMetadata,
       );
       const ownerSession = yield* serverAuth.authenticateHttpRequest(
@@ -173,12 +175,6 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
       expect(revokedCount).toBe(1);
       expect(clientsAfterRevoke).toHaveLength(1);
       expect(clientsAfterRevoke[0]?.sessionId).toBe(ownerSession.sessionId);
-    }).pipe(
-      Effect.provide(
-        makeServerAuthLayer({
-          desktopBootstrapToken: "desktop-bootstrap-token",
-        }),
-      ),
-    ),
+    }).pipe(Effect.provide(makeServerAuthLayer())),
   );
 });

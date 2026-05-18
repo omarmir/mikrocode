@@ -8,7 +8,7 @@
  * @module ReadModelQuery
  */
 import type { OrchestrationReadModel } from "@t3tools/contracts";
-import { ServiceMap } from "effect";
+import { Context } from "effect";
 import type { Effect } from "effect";
 
 /**
@@ -24,6 +24,6 @@ export interface ReadModelQueryShape {
 /**
  * ReadModelQuery - Service tag for in-memory read-model snapshots.
  */
-export class ReadModelQuery extends ServiceMap.Service<ReadModelQuery, ReadModelQueryShape>()(
+export class ReadModelQuery extends Context.Service<ReadModelQuery, ReadModelQueryShape>()(
   "t3/orchestration/Services/ReadModelQuery",
 ) {}

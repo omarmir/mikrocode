@@ -14,6 +14,10 @@ import type {
   ProjectScript,
 } from "@t3tools/contracts";
 
+function getThreadModelKey(thread: OrchestrationThread) {
+  return thread.modelSelection?.model ?? (thread as { readonly model?: string }).model ?? null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -326,7 +330,7 @@ function reconcileThread(previous: OrchestrationThread, next: OrchestrationThrea
     previous.id === next.id &&
     previous.projectId === next.projectId &&
     previous.title === next.title &&
-    previous.modelSelection.model === next.modelSelection.model &&
+    getThreadModelKey(previous) === getThreadModelKey(next) &&
     previous.runtimeMode === next.runtimeMode &&
     previous.interactionMode === next.interactionMode &&
     previous.branch === next.branch &&

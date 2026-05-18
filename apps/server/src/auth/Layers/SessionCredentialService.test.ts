@@ -13,9 +13,7 @@ import { SessionCredentialService } from "../Services/SessionCredentialService.t
 import { ServerSecretStoreLive } from "./ServerSecretStore.ts";
 import { SessionCredentialServiceLive } from "./SessionCredentialService.ts";
 
-const makeServerConfigLayer = (
-  overrides?: Partial<Pick<ServerConfigShape, "desktopBootstrapToken">>,
-) =>
+const makeServerConfigLayer = (overrides?: Partial<ServerConfigShape>) =>
   Layer.effect(
     ServerConfig,
     Effect.gen(function* () {
@@ -27,9 +25,7 @@ const makeServerConfigLayer = (
     }),
   ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-auth-session-test-" })));
 
-const makeSessionCredentialLayer = (
-  overrides?: Partial<Pick<ServerConfigShape, "desktopBootstrapToken">>,
-) =>
+const makeSessionCredentialLayer = (overrides?: Partial<ServerConfigShape>) =>
   SessionCredentialServiceLive.pipe(
     Layer.provide(SqlitePersistenceMemory),
     Layer.provide(ServerSecretStoreLive),
@@ -41,23 +37,23 @@ it.layer(NodeServices.layer)("SessionCredentialServiceLive", (it) => {
     Effect.gen(function* () {
       const sessions = yield* SessionCredentialService;
       const issued = yield* sessions.issue({
-        subject: "desktop-bootstrap",
+        subject: "owner-bootstrap",
         role: "owner",
         client: {
-          label: "Desktop app",
+          label: "Primary owner",
           deviceType: "desktop",
           os: "macOS",
-          browser: "Electron",
+          browser: "Chrome",
           ipAddress: "127.0.0.1",
         },
       });
       const verified = yield* sessions.verify(issued.token);
 
       expect(verified.method).toBe("browser-session-cookie");
-      expect(verified.subject).toBe("desktop-bootstrap");
+      expect(verified.subject).toBe("owner-bootstrap");
       expect(verified.role).toBe("owner");
-      expect(verified.client.label).toBe("Desktop app");
-      expect(verified.client.browser).toBe("Electron");
+      expect(verified.client.label).toBe("Primary owner");
+      expect(verified.client.browser).toBe("Chrome");
       expect(verified.expiresAt?.toString()).toBe(issued.expiresAt.toString());
     }).pipe(Effect.provide(makeSessionCredentialLayer())),
   );
@@ -106,13 +102,13 @@ it.layer(NodeServices.layer)("SessionCredentialServiceLive", (it) => {
     Effect.gen(function* () {
       const sessions = yield* SessionCredentialService;
       const owner = yield* sessions.issue({
-        subject: "desktop-bootstrap",
+        subject: "owner-bootstrap",
         role: "owner",
         client: {
-          label: "Desktop app",
+          label: "Primary owner",
           deviceType: "desktop",
           os: "macOS",
-          browser: "Electron",
+          browser: "Chrome",
         },
       });
       const client = yield* sessions.issue({

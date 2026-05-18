@@ -12,21 +12,17 @@ import { AuthSessionId, TrimmedNonEmptyString } from "./baseSchemas.ts";
  * Typical usage:
  * - rendered in auth/pairing UI so the user understands what kind of
  *   environment they are connecting to
- * - used by clients to decide whether silent desktop bootstrap is expected or
- *   whether an explicit pairing flow should be shown
+ * - used by clients to decide whether local loopback pairing is expected or
+ *   whether an explicit remote pairing flow should be shown
  *
  * Meanings:
- * - `desktop-managed-local`: local desktop-managed environment with narrow
- *   trusted bootstrap, intended to avoid login prompts on the same machine
- * - `loopback-browser`: standalone local server intended for browser pairing on
- *   the same machine
+ * - `loopback-browser`: local server intended for pairing on the same machine
  * - `remote-reachable`: environment intended to be reached from other devices
  *   or networks, where explicit pairing/auth is expected
  * - `unsafe-no-auth`: intentionally unauthenticated mode; this is an explicit
  *   unsafe escape hatch, not a normal deployment mode
  */
 export const ServerAuthPolicy = Schema.Literals([
-  "desktop-managed-local",
   "loopback-browser",
   "remote-reachable",
   "unsafe-no-auth",
@@ -41,12 +37,10 @@ export type ServerAuthPolicy = typeof ServerAuthPolicy.Type;
  * authenticated HTTP / WebSocket traffic after pairing succeeds.
  *
  * Current methods:
- * - `desktop-bootstrap`: a trusted local desktop handoff, used so the desktop
- *   shell can pair the renderer without a login screen
  * - `one-time-token`: a short-lived pairing token, suitable for manual pairing
  *   flows such as `/pair?token=...`
  */
-export const ServerAuthBootstrapMethod = Schema.Literals(["desktop-bootstrap", "one-time-token"]);
+export const ServerAuthBootstrapMethod = Schema.Literal("one-time-token");
 export type ServerAuthBootstrapMethod = typeof ServerAuthBootstrapMethod.Type;
 
 /**
@@ -58,10 +52,8 @@ export type ServerAuthBootstrapMethod = typeof ServerAuthBootstrapMethod.Type;
  * reason clearly about "pair first, then use session auth".
  *
  * Current methods:
- * - `browser-session-cookie`: cookie-backed browser session, used by the web
- *   app after bootstrap/pairing
- * - `bearer-session-token`: token-based session suitable for non-cookie or
- *   non-browser clients
+ * - `browser-session-cookie`: cookie-backed session for browser-style clients
+ * - `bearer-session-token`: token-based session suitable for non-cookie clients
  */
 export const ServerAuthSessionMethod = Schema.Literals([
   "browser-session-cookie",

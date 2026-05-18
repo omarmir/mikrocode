@@ -5,15 +5,8 @@ import * as Crypto from "node:crypto";
 
 const SESSION_COOKIE_NAME = "t3_session";
 
-export function resolveSessionCookieName(input: {
-  readonly mode: "web" | "desktop";
-  readonly port: number;
-}): string {
-  if (input.mode !== "desktop") {
-    return SESSION_COOKIE_NAME;
-  }
-
-  return `${SESSION_COOKIE_NAME}_${input.port}`;
+export function resolveSessionCookieName(): string {
+  return SESSION_COOKIE_NAME;
 }
 
 export function base64UrlEncode(input: string | Uint8Array): string {
